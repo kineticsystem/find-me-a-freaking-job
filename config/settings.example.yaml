@@ -1,0 +1,59 @@
+# Global runtime settings. This file is created from settings.example.yaml
+# on first start and is yours: it is git-ignored. The scan interval can be
+# changed from the web app (settings -> Scanning).
+interval_minutes: 720        # how often the pipeline runs (12 hours)
+run_on_start: true    # fire one run immediately when `serve` starts
+
+# The local model server (llama.cpp's OpenAI-compatible endpoint). Override
+# base_url with the JOBFINDER_LLM_BASE_URL environment variable, e.g. when the
+# model runs in another container.
+llm:
+  base_url: http://127.0.0.1:8084/v1
+  model: Qwen3.8-27B            # the name llama.cpp serves it under (--alias)
+  context_tokens: 120000        # what the server's slot holds (check /slots)
+  output_tokens: 8192
+  startup_wait_seconds: 300     # wait this long for a model that is still loading
+
+opencode:
+  binary: opencode
+  analyst_agent: job-analyst    # offline reasoning (triage / deep dive / extraction)
+  explorer_agent: job-explorer  # network-enabled (discovery / scraping)
+  timeout_seconds: 900
+  max_retries: 2
+  # REAL server window. llama.cpp reports n_ctx=64000; leave headroom.
+  context_tokens: 60000
+
+limits:
+  triage_batch_size: 12       # jobs per triage session
+  max_jobs_per_run: 300       # cap on newly fetched postings per run
+  deepdive_top_n: 10
+  deepdive_min_score: 65
+  posting_chars: 20000        # truncation for a single posting fed to the model
+  max_extract_batches: 3      # HN prose -> structured; bound by output tokens
+  digest_min_score: 60
+  rejections_in_prompt: 20    # recent dismissals (with reasons) shown to the model
+  notes_chars: 6000           # profile/notes.md goes into every judgement verbatim, up to this
+
+discovery:
+  enabled: true
+  queries_per_run: 8          # LLM-generated search queries per run
+  results_per_query: 15
+  max_new_boards_per_run: 10  # newly auto-registered ATS boards per run
+  explorer_enabled: true      # let the LLM browse API-less sites
+  # search_endpoint: "https://searx.example.org/search?q={q}"   # private engine; public ones block
+
+http:
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) jobfinder/0.1 (+personal job search)"
+  timeout_seconds: 30
+  max_concurrency: 5
+  politeness_delay_seconds: 1.0
+
+api:
+  host: 127.0.0.1
+  port: 8099
+  cors_origins: ["*"]
+
+paths:
+  db: data/jobs.db
+  runs: runs
+  profile: profile

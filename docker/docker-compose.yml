@@ -1,0 +1,52 @@
+# The model server, the app server and the web UI in one container. Driven by
+# ./dock.sh, which supplies CONTAINER_NAME and USER_UID/USER_GID; `docker
+# compose` can also be used directly from this directory.
+#
+# Host networking: llama-server then listens on the host's :8084, exactly as it
+# did when it ran on the host, so anything else on the machine that used it
+# (an interactive opencode, say) keeps working; and the UI is on :8099 with no
+# port mapping.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+    image: ${CONTAINER_NAME:-jobfinder}:latest
+    container_name: ${CONTAINER_NAME:-jobfinder}
+    hostname: ${CONTAINER_NAME:-jobfinder}
+    network_mode: host
+    restart: unless-stopped
+    # The GPU, for llama-server (and for the CUDA build).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      # Relative paths resolve against this file's directory. Everything the
+      # user edits or the app persists stays on the host; the code is in the
+      # image.
+      - ../config:/home/developer/app/config
+      - ../profile:/home/developer/app/profile
+      - ../data:/home/developer/app/data
+      - ../runs:/home/developer/app/runs
+      # The scripts, so the llama-server command line (bin/llama-server.sh)
+      # can be tuned with a restart instead of an image rebuild.
+      - ../bin:/home/developer/app/bin
+      # The llama.cpp fork (git submodule). Built in place by build-llama.sh,
+      # so the compiled server survives restarts, image rebuilds and `clean`.
+      - ../modules/llama.cpp:/home/developer/app/modules/llama.cpp
+      # Model files. --hf-repo resolves through the Hugging Face hub cache, so
+      # a model already downloaded on the host is reused, not fetched again.
+      - ${HF_HOME:-~/.cache/huggingface}:/home/developer/.cache/huggingface
+      - ~/.cache/llama.cpp:/home/developer/.cache/llama.cpp
+    environment:
+      JOBFINDER_LLM_BASE_URL: ${JOBFINDER_LLM_BASE_URL:-http://127.0.0.1:8084/v1}
+      JOBFINDER_API_HOST: 0.0.0.0
+      CUDA_ARCH: ${CUDA_ARCH:-native}

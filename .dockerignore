@@ -1,0 +1,12 @@
+.git
+.venv
+web/node_modules
+web/dist
+web/e2e/screenshots
+data
+runs
+profile
+__pycache__
+**/__pycache__
+*.pyc
+modules/

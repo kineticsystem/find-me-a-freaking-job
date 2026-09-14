@@ -1,0 +1,25 @@
+[project]
+name = "find-me-a-freaking-job"
+version = "0.1.0"
+description = "Agentic job search: deterministic fetching, local-LLM reasoning via opencode"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "apscheduler>=3.10",
+    "pypdf>=4.2",
+    "python-multipart>=0.0.9",
+]
+
+# The test tools, installed into the image too so tests run in the container.
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+jobfinder = "jobfinder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jobfinder*"]

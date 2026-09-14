@@ -1,0 +1,30 @@
+# Seed sources. The discovery layer adds more automatically (see data/jobs.db
+# table `sources`), so this is a starting point, not the whole world.
+sources:
+  # --- aggregators with real APIs -------------------------------------
+  - {id: remoteok,   type: remoteok,   enabled: true}
+  - {id: arbeitnow,  type: arbeitnow,  enabled: true, pages: 3}
+  - {id: wwr-prog,   type: weworkremotely, enabled: true,
+     feed: "https://weworkremotely.com/categories/remote-programming-jobs.rss"}
+  - {id: wwr-devops, type: weworkremotely, enabled: true,
+     feed: "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss"}
+  - {id: hn-hiring,  type: hn_hiring,  enabled: true, max_comments: 40}
+
+  # --- company ATS boards (the good stuff) ----------------------------
+  - {id: gh-stripe,  type: greenhouse, slug: stripe,     enabled: true}
+  - {id: gh-datadog, type: greenhouse, slug: datadog,    enabled: true}
+  - {id: lv-spotify, type: lever,      slug: spotify,    enabled: true}
+  - {id: as-ramp,    type: ashby,      slug: ramp,       enabled: true}
+  - {id: as-linear,  type: ashby,      slug: linear,     enabled: true}
+
+  # --- API-less sites browsed by the LLM ------------------------------
+  - {id: euremote,   type: llm_explorer, enabled: false,
+     url: "https://euremotejobs.com/category/it-jobs/",
+     hint: "Extract remote engineering roles open to candidates anywhere in Europe."}
+
+  # --- bulk remote aggregators (filtered locally before any LLM call) --
+  - {id: remotive,   type: remotive,  enabled: true, limit: 200, category: "software-dev"}
+  - {id: jobicy-py,  type: jobicy,    enabled: true, count: 50, tag: python}
+  - {id: jobicy-eu,  type: jobicy,    enabled: true, count: 50, geo: europe, industry: engineering}
+  - {id: himalayas,  type: himalayas, enabled: true, limit: 100}
+  - {id: themuse,    type: themuse,   enabled: true, pages: 2, category: "Software Engineering"}
