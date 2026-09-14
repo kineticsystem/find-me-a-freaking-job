@@ -119,6 +119,8 @@ When it finishes, a readable report is in `runs/latest-digest.md`.
 
 ## 5. The web app
 
+<p align="center"><img src="doc/web.png" alt="Find Me a Freaking Job" width="600"></p>
+
 The server you started in step 3 is the long-running process. It runs the search on the interval set by `interval_minutes` in `config/settings.yaml` (720 — twelve hours — as shipped; change it from the ⚙ settings in the web app or here) and serves the web app and its API on one port. Open:
 
 **http://127.0.0.1:8099/**
