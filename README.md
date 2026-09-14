@@ -22,6 +22,9 @@ What you get:
 
 The architecture is described in [doc/Architecture.md](doc/Architecture.md).
 
+> [!CAUTION]
+> The entire project was "vibe coded" — written by an AI assistant in conversation, with only the tech stack choices made by a human. Use it at your own risk.
+
 ## What you need
 
 - A Linux machine with an NVIDIA GPU that can run a language model, and [Docker](https://docs.docker.com/engine/install/) installed **with GPU access**: the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) lets the container use the GPU, and the model server runs inside it. Install Docker, install the toolkit, then `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`. Check it with `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`, which should print your GPU
