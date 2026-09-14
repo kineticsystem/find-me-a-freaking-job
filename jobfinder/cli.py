@@ -12,11 +12,20 @@ from .config import ROOT, settings
 
 
 def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from logging.handlers import RotatingFileHandler
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    console = logging.StreamHandler(); console.setFormatter(fmt); root.addHandler(console)
+    # Also to runs/app.log on the host, so the trail survives a container
+    # restart -- docker logs die with the container.
+    try:
+        logdir = settings().paths.resolve("runs"); logdir.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(logdir / "app.log", maxBytes=5_000_000, backupCount=3)
+        fh.setFormatter(fmt); root.addHandler(fh)
+    except Exception as exc:  # noqa: BLE001 - logging must never stop the app
+        root.warning("no file log: %s", exc)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
@@ -49,6 +58,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         host=args.host or cfg.api.host,
         port=args.port or cfg.api.port,
         log_level="debug" if args.verbose else "info",
+        log_config=None,   # keep our handlers (console + runs/app.log) for uvicorn's access log too
     )
     return 0
 

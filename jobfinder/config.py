@@ -332,9 +332,17 @@ def write_top_level_setting(key: str, value: int | float | str | bool) -> None:
     the few settings that are editable from the UI."""
     import re
 
+    import logging
+    import traceback
+
     path = settings_path()
     text = path.read_text() if path.exists() else ""
     rendered = str(value).lower() if isinstance(value, bool) else str(value)
+    # Every write to this file is logged with its call stack: the interval has
+    # been found changed with no request in the log, and this is the only
+    # writer in the code.
+    logging.getLogger(__name__).warning(
+        "writing %s: %s -> %s\n%s", path.name, key, rendered, "".join(traceback.format_stack(limit=8)))
     # value, then an optional trailing comment that must stay separated from
     # the new value by whitespace (YAML needs " #" to start a comment).
     pattern = re.compile(rf"^{re.escape(key)}:[ \t]*[^#\n]*?[ \t]*(#[^\n]*)?$", re.M)
