@@ -1,4 +1,4 @@
-<p align="center"><img src="doc/logo2.png" alt="Find Me a Freaking Job" width="600"></p>
+<p align="center"><img src="doc/tagline.png" alt="Find Me a Freaking Job" width="600"></p>
 
 ## Introduction
 
