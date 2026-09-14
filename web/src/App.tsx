@@ -178,8 +178,8 @@ export default function App() {
             <input type="number" min={0} value={archiveDays} onChange={(e) => setArchiveDays(Math.max(0, Number(e.target.value) || 0))} aria-label="days" />
             <span>days</span>
           </span>
-          <button className="btn btn-sm" onClick={onRunNow} disabled={health?.running || (health ? !health.setup.ready : false)}
-                  title={health && !health.setup.ready ? 'Complete the set-up first' : undefined}>Run now</button>
+          <button className="btn btn-sm btn-primary" onClick={onRunNow} disabled={health?.running || (health ? !health.setup.ready : false)}
+                  title={health && !health.setup.ready ? 'Complete the set-up first' : undefined}>▶ Scan now</button>
         </div>
 
         {error && <div className="empty">Could not load jobs: {error}</div>}

@@ -36,7 +36,7 @@ def start() -> BackgroundScheduler:
     )
     sched.start()
     _scheduler = sched
-    log.info("scheduler started: every %d minutes", cfg.interval_minutes)
+    log.info("scheduler started: every %d minutes (interval_minutes in config/settings.yaml)", cfg.interval_minutes)
 
     if cfg.run_on_start:
         sched.add_job(run_once, id=f"{JOB_ID}-initial", name="initial run")
