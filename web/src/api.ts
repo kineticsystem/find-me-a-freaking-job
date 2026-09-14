@@ -107,6 +107,8 @@ export const resetJobs = () =>
 export const resetAll = () =>
   request<{ deleted: Record<string, number>; sources_reseeded: number }>('/reset/all', { method: 'POST', body: JSON.stringify({ confirm: 'DELETE' }) })
 
+export const stopRun = () => request<{ ok: true }>('/runs/stop', { method: 'POST' })
+
 export const triggerRun = () => request<{ ok: true }>('/runs', { method: 'POST' })
 
 export { ApiError, PAGE_SIZE }

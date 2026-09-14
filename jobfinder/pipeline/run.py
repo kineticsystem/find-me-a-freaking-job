@@ -119,9 +119,15 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         # -- reasoning ----------------------------------------------------
         if not skip_llm and digest:
             stats.update(triage.run_triage(digest, criteria, workdir, run_id))
-            stats.update(deepdive.run_deepdive(digest, criteria, workdir, run_id))
-            progress.stage("discover", "looking for new company boards")
-            stats["websearch"] = discovery.run_websearch(digest, workdir)
+            if not progress.stop_requested():
+                stats.update(deepdive.run_deepdive(digest, criteria, workdir, run_id))
+            if not progress.stop_requested():
+                progress.stage("discover", "looking for new company boards")
+                stats["websearch"] = discovery.run_websearch(digest, workdir)
+        if progress.stop_requested():
+            status = "stopped"
+            stats["stopped"] = True
+            log.info("run %d stopped on request; what was scored so far is kept", run_id)
 
         stats["duration_seconds"] = round(time.time() - started, 1)
         digest_path = digest_mod.write_digest(workdir, run_id, criteria, stats)
@@ -131,6 +137,12 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         log.info("run %d finished (%s) in %.1fs: %s", run_id, status, stats["duration_seconds"], stats)
         return stats
 
+    except opencode.SessionCancelled:
+        stats["duration_seconds"] = round(time.time() - started, 1)
+        stats["stopped"] = True
+        db.finish_run(run_id, "stopped", stats)
+        log.info("run %d stopped on request during a model call; what was scored so far is kept", run_id)
+        return stats
     except Exception as exc:
         stats["duration_seconds"] = round(time.time() - started, 1)
         error = f"{type(exc).__name__}: {exc}"

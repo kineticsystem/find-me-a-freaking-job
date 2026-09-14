@@ -10,7 +10,7 @@ from typing import Any
 from .. import db
 from ..config import settings
 from ..models import DeepDive, ProfileDigest
-from ..opencode import OpencodeError, run_session
+from ..opencode import OpencodeError, SessionCancelled, run_session
 from ..prompts import deepdive_prompt
 from ..textutil import truncate
 from . import progress
@@ -30,6 +30,10 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
     log.info("deep dive: %d candidates", len(rows))
     progress.stage("deepdive", f"reading the {len(rows)} best matches in full", total=len(rows))
     for i, row in enumerate(rows, start=1):
+        if progress.stop_requested():
+            stats["stopped"] = True
+            log.info("stop requested; ending %s here", "triage" if "triage" in __name__ else "deep dive")
+            break
         started = time.time()
         job = {
             "company": row["company"], "title": row["title"],
@@ -43,6 +47,9 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
                 DeepDive,
                 title=f"deepdive {row['company']} {row['title']}"[:60],
             )
+        except SessionCancelled:
+            stats["stopped"] = True
+            break
         except OpencodeError as exc:
             stats["failed"] += 1
             log.warning("deep dive failed for job %s: %s", row["id"], exc)

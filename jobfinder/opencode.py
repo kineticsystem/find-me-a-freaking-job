@@ -20,8 +20,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Type, TypeVar
@@ -40,6 +42,39 @@ RESULT_NAME = "result.json"
 
 class OpencodeError(RuntimeError):
     pass
+
+
+class SessionCancelled(OpencodeError):
+    """The in-flight session was killed by a stop request."""
+
+
+# The session currently running, so a stop request can end it at once.
+_current: subprocess.Popen[str] | None = None
+_current_lock = threading.Lock()
+_cancelled = threading.Event()
+
+
+def reset_cancel() -> None:
+    _cancelled.clear()
+
+
+def _kill_tree(proc: "subprocess.Popen[str]") -> None:
+    """opencode spawns children (a server, the model client); the session is
+    started in its own process group so all of them go together."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except Exception:  # noqa: BLE001 - fall back to the parent alone
+        proc.kill()
+
+
+def kill_current() -> None:
+    _cancelled.set()
+    with _current_lock:
+        proc = _current
+    if proc and proc.poll() is None:
+        _kill_tree(proc)
 
 
 def estimate_tokens(text: str) -> int:
@@ -184,19 +219,31 @@ def run_session(
             cmd += ["-f", str(f)]
 
         started = time.time()
+        if _cancelled.is_set():
+            raise SessionCancelled(f"{title}: stopped before starting")
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=str(workdir), env=env, start_new_session=True,
+        )
+        with _current_lock:
+            globals()["_current"] = proc
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout,
-                cwd=str(workdir), env=env
-            )
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            proc.communicate()
             last_error = f"opencode timed out after {timeout}s"
             log.warning("%s: %s", title, last_error)
             continue
+        finally:
+            with _current_lock:
+                globals()["_current"] = None
+        if _cancelled.is_set():
+            raise SessionCancelled(f"{title}: stopped")
         elapsed = time.time() - started
 
-        (workdir / f"attempt{attempt}.stdout.log").write_text(proc.stdout or "")
-        (workdir / f"attempt{attempt}.stderr.log").write_text(proc.stderr or "")
+        (workdir / f"attempt{attempt}.stdout.log").write_text(stdout or "")
+        (workdir / f"attempt{attempt}.stderr.log").write_text(stderr or "")
         (workdir / f"attempt{attempt}.prompt.txt").write_text(attempt_prompt)
         log.info("%s: attempt %d finished in %.1fs (rc=%d)", title, attempt, elapsed, proc.returncode)
 
@@ -206,8 +253,8 @@ def run_session(
         payload = result_path.read_text().strip() if result_path.exists() else ""
         if not payload:
             last_error = f"no {RESULT_NAME} written (rc={proc.returncode})"
-            if proc.returncode != 0 and proc.stderr:
-                last_error += ": " + proc.stderr.strip().splitlines()[-1][:200]
+            if proc.returncode != 0 and stderr:
+                last_error += ": " + stderr.strip().splitlines()[-1][:200]
         else:
             try:
                 return schema.model_validate_json(payload)

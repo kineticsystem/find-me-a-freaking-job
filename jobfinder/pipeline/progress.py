@@ -15,9 +15,31 @@ from typing import Any
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {"active": False}
+_stop = threading.Event()
+
+
+def request_stop() -> bool:
+    """Ask the running scan to stop after its current unit. Returns False if
+    no scan is running. The in-flight model call is killed too, so the wait
+    is seconds, not minutes."""
+    with _lock:
+        if not _state.get("active"):
+            return False
+        _state["stopping"] = True
+    _stop.set()
+    from .. import opencode
+    opencode.kill_current()
+    return True
+
+
+def stop_requested() -> bool:
+    return _stop.is_set()
 
 
 def begin(run_id: int) -> None:
+    from .. import opencode
+    _stop.clear()
+    opencode.reset_cancel()
     with _lock:
         _state.clear()
         _state.update({
@@ -54,6 +76,7 @@ def note(**fields: Any) -> None:
 
 
 def finish() -> None:
+    _stop.clear()
     with _lock:
         _state.clear()
         _state["active"] = False
@@ -80,4 +103,5 @@ def snapshot() -> dict[str, Any]:
         "elapsed_seconds": int(time.time() - s["started_at"]),
         "fetched": s.get("fetched", 0),
         "sources": s.get("sources", 0),
+        "stopping": bool(s.get("stopping")),
     }

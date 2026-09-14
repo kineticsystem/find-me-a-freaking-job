@@ -181,6 +181,17 @@ def trigger_run() -> dict[str, Any]:
     return {"ok": True, "queued": True}
 
 
+@app.post("/runs/stop")
+def stop_run() -> dict[str, Any]:
+    """Stop the running scan after its current unit; the in-flight model
+    call is killed. Everything scored so far stays."""
+    from .pipeline import progress
+
+    if not progress.request_stop():
+        raise HTTPException(409, "no scan is running")
+    return {"ok": True, "stopping": True}
+
+
 @app.get("/digest", response_class=PlainTextResponse)
 def latest_digest() -> str:
     path = settings().paths.resolve("runs") / "latest-digest.md"

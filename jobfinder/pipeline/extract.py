@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..config import settings
 from ..models import RawJob
-from ..opencode import OpencodeError, estimate_tokens, run_session
+from ..opencode import OpencodeError, SessionCancelled, estimate_tokens, run_session
 from ..models import ExtractionResult
 from ..prompts import extract_prompt
 from ..textutil import clean, infer_remote, truncate
@@ -49,6 +49,9 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
                 ExtractionResult,
                 title=f"extract batch {index}",
             )
+        except SessionCancelled:
+            batch, used = [], 0
+            return
         except OpencodeError as exc:
             log.warning("extraction batch %d failed: %s", index, exc)
             progress.unit_done(time.time() - started)
@@ -79,6 +82,8 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
 
     index = 0
     for ref, job in enumerate(pending, start=1):
+        if progress.stop_requested():
+            break
         if index >= max_batches:
             log.info("extraction capped at %d batches this run", max_batches)
             break

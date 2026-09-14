@@ -77,6 +77,7 @@ export interface Progress {
   elapsed_seconds?: number
   fetched?: number
   sources?: number
+  stopping?: boolean
 }
 
 export interface Health {

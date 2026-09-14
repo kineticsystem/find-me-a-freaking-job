@@ -10,7 +10,7 @@ from typing import Any
 from .. import db
 from ..config import settings
 from ..models import ProfileDigest, TriageBatch
-from ..opencode import OpencodeError, run_session
+from ..opencode import OpencodeError, SessionCancelled, run_session
 from ..prompts import triage_prompt
 from ..textutil import truncate
 from . import progress
@@ -45,6 +45,10 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
     progress.stage("triage", f"scoring {len(pending)} postings", total=n_batches)
 
     for index in range(0, len(pending), batch_size):
+        if progress.stop_requested():
+            stats["stopped"] = True
+            log.info("stop requested; ending %s here", "triage" if "triage" in __name__ else "deep dive")
+            break
         chunk = pending[index : index + batch_size]
         by_ref = {i + 1: row for i, row in enumerate(chunk)}
         entries = [_row_to_entry(ref, row) for ref, row in by_ref.items()]
@@ -59,6 +63,9 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
                 TriageBatch,
                 title=f"triage batch {batch_no}",
             )
+        except SessionCancelled:
+            stats["stopped"] = True
+            break
         except OpencodeError as exc:
             stats["failed_batches"] += 1
             log.warning("triage batch %d failed: %s", batch_no, exc)

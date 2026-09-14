@@ -154,6 +154,7 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 | POST | `/jobs/archive` | `{"older_than_days": N}` and/or `{"ids": […]}`; the age rule only touches `new` jobs |
 | DELETE | `/jobs/{id}` | permanent, cascades |
 | GET / POST | `/runs` | history / trigger now |
+| POST | `/runs/stop` | cooperative stop: the stages check a flag between units, and the in-flight opencode session's process group is killed so the wait is seconds; the run is recorded as `stopped` with what it scored |
 | GET | `/digest` | latest Markdown digest |
 | GET | `/sources` | the registry with per-source counts and health |
 | POST | `/sources` | `{"url": …}` — register a Greenhouse / Lever / Ashby board from its careers URL; fetched once to check it answers and has openings |

@@ -142,6 +142,16 @@ export default function App() {
     }
   }
 
+  const onStop = async () => {
+    try {
+      await api.stopRun()
+      notify('Stopping — finishing nothing further; what is scored so far stays')
+      setTimeout(refreshMeta, 500)
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'Could not stop', true)
+    }
+  }
+
   const nextRun = health?.next_run ? new Date(health.next_run) : null
 
   return (
@@ -193,7 +203,13 @@ export default function App() {
         </div>
 
         <div className="scan-row">
-          <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health || health.running || !health.setup.ready}>▶ Scan now</button>
+          {health?.running ? (
+            <button className="btn btn-scan btn-danger" onClick={onStop} disabled={health.progress.stopping}>
+              {health.progress.stopping ? 'Stopping…' : '■ Stop scan'}
+            </button>
+          ) : (
+            <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health || !health.setup.ready}>▶ Scan now</button>
+          )}
           {health && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
         </div>
         {health?.running && <ScanProgress p={health.progress} />}
