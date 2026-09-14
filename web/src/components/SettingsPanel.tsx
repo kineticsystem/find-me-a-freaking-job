@@ -6,6 +6,7 @@ import { SourcesSection } from './SourcesSection'
 import { PreferencesSection } from './PreferencesSection'
 import { DangerZone } from './DangerZone'
 import { UNIT_MINUTES, describe, split, type Unit } from '../interval'
+import { getTheme, setTheme, type Theme } from '../theme'
 
 interface Props {
   open: boolean
@@ -22,6 +23,8 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Pro
   const [unit, setUnit] = useState<Unit>('hours')
   const [runOnStart, setRunOnStart] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [theme, setThemeState] = useState<Theme>(getTheme)
+  const chooseTheme = (t: Theme) => { setTheme(t); setThemeState(t) }
 
   useEffect(() => {
     if (!open) return
@@ -54,6 +57,18 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Pro
 
   return (
     <div className="settings" role="dialog" aria-label="Settings">
+      <div className="settings-section">Appearance</div>
+      <div className="settings-row" role="radiogroup" aria-label="Theme">
+        <span className="settings-label" style={{ marginTop: 0 }}>Theme</span>
+        {(['auto', 'light', 'dark'] as Theme[]).map((t) => (
+          <button key={t} type="button" role="radio" aria-checked={theme === t}
+                  className={`chip chip-btn${theme === t ? ' on' : ''}`} onClick={() => chooseTheme(t)}>
+            {t === 'auto' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}
+          </button>
+        ))}
+      </div>
+      <div className="settings-hint">Remembered by this browser only, so your phone and your desktop can differ.</div>
+
       <div className="settings-section">Scanning</div>
       <div className="settings-row">
         <label htmlFor="interval-n">Scan for jobs every</label>

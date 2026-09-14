@@ -15,8 +15,26 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
 }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+/* Dark palette: chosen explicitly (data-theme="dark"), or the system's
+   preference when the user has not chosen (no data-theme). */
+:root[data-theme="dark"] {
+    --bg: #111318;
+    --surface: #1a1d24;
+    --surface-2: #232732;
+    --border: #2e333d;
+    --text: #e8eaee;
+    --muted: #9aa2ad;
+    --accent: #6d9cff;
+    --accent-text: #0b1220;
+    --danger: #ff6b6b;
+    --ok: #4cc47e;
+    --warn: #e2a94a;
+    --shadow: none;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #111318;
     --surface: #1a1d24;
     --surface-2: #232732;

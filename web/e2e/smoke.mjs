@@ -130,7 +130,8 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   const rej = await (await fetch(BASE + '/rejections')).json()
   check(rej.rejections.some((r) => r.reason.includes('e2e test reason')), 'API /rejections: reason recorded for the model')
   await page.locator('.job', { hasText: dTitle }).locator('button:has-text("Restore")').click()
-  await page.waitForFunction(() => document.querySelectorAll('.job-meta.reason').length === 0)
+  // other jobs may genuinely be dismissed; only this card must leave the view
+  await page.waitForFunction((t) => ![...document.querySelectorAll('.job .job-title')].some((e) => e.textContent.includes(t)), dTitle)
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, '')
   await waitTotal(page, all)
   const rej2 = await (await fetch(BASE + '/rejections')).json()
@@ -156,6 +157,21 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   check(patches.at(-1).interval_minutes === 360, 'settings: units convert (6 hours -> 360)')
   await page.unroute('**/settings')
   check((await (await fetch(BASE + '/settings')).json()).interval_minutes === (await (await fetch(BASE + '/settings')).json()).interval_minutes, 'settings: server untouched by the test')
+
+  // theme: a per-browser choice, applied at once and kept across reloads
+  const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+  const autoBg = await bg()
+  await page.click('.settings button[role=radio]:has-text("Dark")')
+  const darkBg = await bg()
+  check(darkBg !== autoBg && (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', `theme: Dark applies at once (${autoBg} -> ${darkBg})`)
+  await page.reload(); await page.waitForSelector('.job')
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark' && (await bg()) === darkBg, 'theme: choice survives a reload with no flash')
+  await page.click('button[aria-label="Settings"]'); await page.waitForSelector('.settings button[role=radio]')
+  await page.click('.settings button[role=radio]:has-text("Light")')
+  check((await bg()) === autoBg && (await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'theme: Light restores the light palette')
+  await page.click('.settings button[role=radio]:has-text("Auto")')
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === undefined && (await page.evaluate(() => localStorage.getItem('theme'))) === null, 'theme: Auto forgets the choice')
+  await page.waitForSelector('.settings-hint:has-text("Next scan")')
 
   // profile section: shows the real CV and notes; never modifies them here
   const prof = await (await fetch(BASE + '/profile')).json()
