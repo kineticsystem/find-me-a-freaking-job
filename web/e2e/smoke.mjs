@@ -98,15 +98,17 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   // shortlist -> applied -> reset round trip
   const card = page.locator('.job').first()
   const t2 = await card.locator('.job-title').textContent()
+  // other jobs may genuinely be shortlisted or applied; wait on this card only
+  const thisCard = page.locator('.job', { hasText: t2 })
   await card.locator('button:has-text("Shortlist")').click()
-  await page.waitForSelector('.chip[data-value=shortlisted]')
-  check(await page.locator('.job', { hasText: t2 }).locator('.chip[data-value=shortlisted]').isVisible(), 'shortlist: status chip appears')
-  await page.locator('.job', { hasText: t2 }).locator('button:has-text("Applied")').click()
-  await page.waitForSelector('.chip[data-value=applied]')
-  check(await page.locator('.job', { hasText: t2 }).locator('.chip[data-value=applied]').isVisible(), 'applied: status chip updates')
-  await page.locator('.job', { hasText: t2 }).locator('button:has-text("Reset")').click()
-  await page.waitForFunction(() => !document.querySelector('.chip[data-value=applied]'))
-  check(!(await page.locator('.chip[data-value=applied]').count()), 'reset: back to new')
+  await thisCard.locator('.chip[data-value=shortlisted]').waitFor()
+  check(true, 'shortlist: status chip appears')
+  await thisCard.locator('button:has-text("Applied")').click()
+  await thisCard.locator('.chip[data-value=applied]').waitFor()
+  check(true, 'applied: status chip updates')
+  await thisCard.locator('button:has-text("Reset")').click()
+  await thisCard.locator('.chip[data-kind=status]').waitFor({ state: 'detached' })
+  check(true, 'reset: back to new')
 
   // "Not for me" with chips + free text -> dismissed with a reason, hidden
   // from the active list, visible under status=dismissed, then restored.

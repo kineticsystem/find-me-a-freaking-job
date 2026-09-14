@@ -122,8 +122,8 @@ a { color: var(--accent); }
 }
 .chip[data-kind="remote"] { color: var(--ok); }
 .chip[data-kind="status"] { border: 1px solid var(--border); background: transparent; text-transform: capitalize; }
-.chip[data-kind="status"][data-value="shortlisted"] { color: var(--accent); border-color: var(--accent); }
-.chip[data-kind="status"][data-value="applied"] { color: var(--ok); border-color: var(--ok); }
+.chip[data-kind="status"][data-value="shortlisted"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.chip[data-kind="status"][data-value="applied"] { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent); font-weight: 600; }
 .chip[data-kind="warn"] { color: var(--danger); }
 .chip-btn { cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
 .chip-btn:hover { background: var(--surface-2); }
