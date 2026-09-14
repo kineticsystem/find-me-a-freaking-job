@@ -1,6 +1,4 @@
-<p align="center"><img src="doc/logo.png" alt="Find Me a Freaking Job" width="320"></p>
-
-# Find Me a Freaking Job
+<p align="center"><img src="doc/logo2.png" alt="Find Me a Freaking Job" width="600"></p>
 
 ## Introduction
 
