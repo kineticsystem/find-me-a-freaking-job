@@ -43,7 +43,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
   const toggle = (r: string) => setPicked((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]))
 
   return (
-    <article className={`job${archived ? ' is-archived' : ''}${dismissed ? ' is-dismissed' : ''}`} aria-busy={busy}>
+    <article className={`job${archived ? ' is-archived' : ''}${dismissed ? ' is-dismissed' : ''}${job.status === 'applied' ? ' is-applied' : ''}`} aria-busy={busy}>
       <div className="job-head">
         <div className={`score${job.score_stale ? ' stale' : ''}`} data-band={band(job.score)}
              title={job.score_stale ? 'Scored before your last CV or preferences change — re-scored on the next scan' : (job.verdict ?? 'not yet evaluated')}>

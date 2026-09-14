@@ -101,6 +101,7 @@ a { color: var(--accent); }
   min-width: 0;
 }
 .job.is-archived { opacity: 0.6; }
+.job.is-applied { background: color-mix(in srgb, var(--ok) 7%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); }
 .job.is-dismissed { border-left: 4px solid var(--danger); background: color-mix(in srgb, var(--danger) 5%, var(--surface)); }
 .job.is-dismissed .job-title { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent); }
 .job-head { display: flex; gap: 10px; align-items: flex-start; }
