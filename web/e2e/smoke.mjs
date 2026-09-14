@@ -38,6 +38,10 @@ const waitTotal = (page, n) =>
 const waitTotalNot = (page, n) =>
   page.waitForFunction((n) => { const t = document.querySelector('.summary > span').textContent; return !t.startsWith('Loading') && !t.startsWith(`${n} `) }, n)
 const SELECT = { status: 0, remote: 1, source: 2, sort: 3 }
+// Only ever act on a card the user has NOT touched (status "new", no chip):
+// the suite once "restored" the user's applied job to new because it was
+// the first card in the list.
+const freshCard = (page) => page.locator('.job:not(:has(.chip[data-kind=status]))').first()
 
 // ---------------------------------------------------------------- desktop
 await run('desktop', { width: 1280, height: 800 }, async (page) => {
@@ -77,7 +81,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.waitForFunction((t) => document.querySelector('.job-company')?.textContent === t, firstBefore)
 
   // archive first card, then find it under status=archived, then unarchive
-  const first = page.locator('.job').first()
+  const first = freshCard(page)
   const title = await first.locator('.job-title').textContent()
   await first.locator('button:has-text("Archive")').click()
   await page.waitForFunction((t) => !document.querySelector('.job .job-title')?.textContent.includes(t), title)
@@ -96,7 +100,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   check((await total(page)) === all, 'unarchive: total restored')
 
   // shortlist -> applied -> reset round trip
-  const card = page.locator('.job').first()
+  const card = freshCard(page)
   const t2 = await card.locator('.job-title').textContent()
   // other jobs may genuinely be shortlisted or applied; wait on this card only
   const thisCard = page.locator('.job', { hasText: t2 })
@@ -112,7 +116,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
 
   // "Not for me" with chips + free text -> dismissed with a reason, hidden
   // from the active list, visible under status=dismissed, then restored.
-  const d = page.locator('.job').first()
+  const d = freshCard(page)
   const dTitle = await d.locator('.job-title').textContent()
   await d.locator('button:has-text("Not for me")').click()
   check(await d.locator('.dismiss').isVisible(), 'not for me: asks why with chips')
@@ -243,7 +247,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.click('.danger-confirm button:has-text("Cancel")')
 
   // delete asks for confirmation; we decline so real data survives
-  await page.locator('.job').first().locator('button:has-text("Delete")').click()
+  await freshCard(page).locator('button:has-text("Delete")').click()
   check(await page.locator('.confirm').isVisible(), 'delete: asks for confirmation')
   await page.locator('.confirm button:has-text("No")').click()
   check(!(await page.locator('.confirm').count()), 'delete: declining keeps the job')
