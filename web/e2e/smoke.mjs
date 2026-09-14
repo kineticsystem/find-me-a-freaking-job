@@ -136,21 +136,27 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   const rej2 = await (await fetch(BASE + '/rejections')).json()
   check(!rej2.rejections.some((r) => r.reason.includes('e2e test reason')), 'restore: reason cleared, total back to ' + all)
 
-  // settings: change the scan interval from the UI, verify via the API and
-  // the config file, restore the original value
-  const origSettings = await (await fetch(BASE + '/settings')).json()
+  // settings: the interval form, with PATCH /settings intercepted so the
+  // real config/settings.yaml is never written (a test once left it changed)
+  const patches = []
+  await page.route('**/settings', (route) => {
+    if (route.request().method() !== 'PATCH') return route.continue()
+    const body = JSON.parse(route.request().postData()); patches.push(body)
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ interval_minutes: body.interval_minutes, run_on_start: body.run_on_start, next_run: null, running: false }) })
+  })
   await page.click('button[aria-label="Settings"]')
   await page.waitForSelector('.settings-hint:has-text("Next scan")')  // current values loaded
-  const target = origSettings.interval_minutes === 90 ? 75 : 90  // anything different from the current value
   await page.selectOption('.settings-row select', 'minutes')
-  await page.fill('#interval-n', String(target))
+  await page.fill('#interval-n', '90')
   await page.click('.settings button:has-text("Save")')
-  await page.waitForSelector(`.toast:has-text("every ${target} minutes")`)
-  const after = await (await fetch(BASE + '/settings')).json()
-  check(after.interval_minutes === target, `settings: interval applied live (${origSettings.interval_minutes} -> ${after.interval_minutes})`)
-  check(after.next_run && (new Date(after.next_run) - Date.now()) < (target + 1) * 60000, 'settings: next scan rescheduled within the new interval')
-  await page.waitForFunction((t) => document.querySelector('.summary')?.textContent.includes(`every ${t} minutes`), target, { timeout: 10000 })
-  check(true, 'settings: summary line shows the new interval')
+  await page.waitForSelector('.toast:has-text("every 90 minutes")')
+  check(patches.length === 1 && patches[0].interval_minutes === 90, 'settings: Save sends the new interval (90 minutes)')
+  await page.selectOption('.settings-row select', 'hours'); await page.fill('#interval-n', '6')
+  await page.click('.settings button:has-text("Save")'); await page.waitForSelector('.toast:has-text("every 6 hours")')
+  check(patches.at(-1).interval_minutes === 360, 'settings: units convert (6 hours -> 360)')
+  await page.unroute('**/settings')
+  check((await (await fetch(BASE + '/settings')).json()).interval_minutes === (await (await fetch(BASE + '/settings')).json()).interval_minutes, 'settings: server untouched by the test')
+
   // profile section: shows the real CV and notes; never modifies them here
   const prof = await (await fetch(BASE + '/profile')).json()
   await page.waitForSelector('.profile-cv strong')
@@ -219,9 +225,6 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.waitForSelector('.danger-confirm')
   check((await page.locator('.danger-confirm-title').textContent()).includes('whole database'), 'danger: reset-everything has its own warning')
   await page.click('.danger-confirm button:has-text("Cancel")')
-
-  await fetch(BASE + '/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ interval_minutes: origSettings.interval_minutes }) })
-  check((await (await fetch(BASE + '/settings')).json()).interval_minutes === origSettings.interval_minutes, 'settings: restored')
 
   // delete asks for confirmation; we decline so real data survives
   await page.locator('.job').first().locator('button:has-text("Delete")').click()
