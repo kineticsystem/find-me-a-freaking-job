@@ -14,7 +14,7 @@ const count = (m: Record<string, number> | undefined, k: string) => (m?.[k] ? ` 
 export function Filters({ query, facets, open, onChange, onReset }: Props) {
   const sources = Object.keys(facets?.source ?? {})
   const active =
-    query.status || query.remote || query.source || query.minScore > 0 || query.includeArchived
+    query.status || query.remote || query.source || query.minScore > 0 || query.hidden
 
   return (
     <div className={`filters${open ? ' open' : ''}`} role="group" aria-label="Filters">
@@ -62,8 +62,8 @@ export function Filters({ query, facets, open, onChange, onReset }: Props) {
       </label>
       {!query.status && (
         <label>
-          <input type="checkbox" checked={query.includeArchived} onChange={(e) => onChange({ includeArchived: e.target.checked })} />
-          Show archived and dismissed
+          <input type="checkbox" checked={query.hidden} onChange={(e) => onChange({ hidden: e.target.checked })} />
+          Show only archived and dismissed
         </label>
       )}
       <span className="spacer" />

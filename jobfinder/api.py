@@ -88,19 +88,19 @@ def list_jobs(
     source: str | None = None,
     remote: str | None = None,
     q: str | None = None,
-    include_archived: bool = False,
+    hidden: bool = False,
     sort: Literal["score", "newest", "company"] = "score",
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
-    """Paged job list. Archived and dismissed jobs are hidden unless asked for."""
+    """Paged job list: the active jobs, or with hidden=true only the archived and dismissed ones."""
     if status and status not in STATUSES:
         raise HTTPException(400, f"status must be one of {STATUSES}")
     if remote and remote not in ("remote", "hybrid", "onsite", "unknown"):
         raise HTTPException(400, "remote must be one of remote|hybrid|onsite|unknown")
     rows, total = db.list_jobs(
         min_score=min_score, status=status, source=source, remote=remote, query=q,
-        include_archived=include_archived, sort=sort, limit=limit, offset=offset,
+        hidden=hidden, sort=sort, limit=limit, offset=offset,
     )
     return {
         "count": len(rows), "total": total, "offset": offset, "limit": limit,

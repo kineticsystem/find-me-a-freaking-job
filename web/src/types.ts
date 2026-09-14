@@ -99,7 +99,7 @@ export interface JobQuery {
   source: string
   minScore: number
   sort: Sort
-  includeArchived: boolean
+  hidden: boolean          // show only archived and dismissed
 }
 
 export const DEFAULT_QUERY: JobQuery = {
@@ -109,7 +109,7 @@ export const DEFAULT_QUERY: JobQuery = {
   source: '',
   minScore: 0,
   sort: 'score',
-  includeArchived: false,
+  hidden: false,
 }
 
 export interface Settings {

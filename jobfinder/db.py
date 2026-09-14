@@ -257,14 +257,14 @@ JOIN (SELECT job_id, MAX(id) AS mid FROM evaluations
 def list_jobs(
     *, min_score: int = 0, status: str | None = None, source: str | None = None,
     query: str | None = None, remote: str | None = None,
-    include_archived: bool = False, sort: str = "score",
+    hidden: bool = False, sort: str = "score",
     limit: int = 100, offset: int = 0, criteria_hash: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Jobs joined with their best current evaluation. Returns (page, total).
 
-    `status=None` means the active statuses -- new, shortlisted, applied --
-    unless include_archived, which shows everything. Pass an explicit status to
-    see exactly that one, including 'archived' or 'dismissed'.
+    `status=None` means the active statuses -- new, shortlisted, applied.
+    `hidden=True` flips that: only archived and dismissed. Pass an explicit
+    status to see exactly that one.
     """
     from .pipeline.criteria import current_criteria_hash
 
@@ -305,7 +305,9 @@ def list_jobs(
     if status:
         sql += " AND COALESCE(u.status,'new') = ?"
         params.append(status)
-    elif not include_archived:
+    elif hidden:
+        sql += " AND COALESCE(u.status,'new') IN ('archived', 'dismissed')"
+    else:
         sql += " AND COALESCE(u.status,'new') NOT IN ('archived', 'dismissed')"
     if source:
         sql += " AND j.source_id = ?"

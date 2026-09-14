@@ -43,7 +43,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
   const toggle = (r: string) => setPicked((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]))
 
   return (
-    <article className={`job${archived || dismissed ? ' is-archived' : ''}`} aria-busy={busy}>
+    <article className={`job${archived ? ' is-archived' : ''}${dismissed ? ' is-dismissed' : ''}`} aria-busy={busy}>
       <div className="job-head">
         <div className={`score${job.score_stale ? ' stale' : ''}`} data-band={band(job.score)}
              title={job.score_stale ? 'Scored before your last CV or preferences change — re-scored on the next scan' : (job.verdict ?? 'not yet evaluated')}>
@@ -105,7 +105,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
         </div>
       ) : (
       <div className="job-actions">
-        {job.status !== 'shortlisted' && job.status !== 'applied' && !dismissed && (
+        {job.status !== 'shortlisted' && job.status !== 'applied' && !dismissed && !archived && (
           <button className="btn btn-sm" disabled={busy} onClick={() => onStatus(job, 'shortlisted')}>★ Shortlist</button>
         )}
         {job.status === 'shortlisted' && (

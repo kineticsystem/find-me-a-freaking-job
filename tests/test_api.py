@@ -69,7 +69,8 @@ def test_archive_hides_by_default_and_is_reversible(client, seeded):
     r = client.patch(f"/jobs/{seeded['c']}/state", json={"status": "archived"})
     assert r.status_code == 200
     assert client.get("/jobs").json()["total"] == 2
-    assert client.get("/jobs", params={"include_archived": "true"}).json()["total"] == 3
+    hidden = client.get("/jobs", params={"hidden": "true"}).json()
+    assert hidden["total"] == 1 and hidden["jobs"][0]["status"] == "archived"   # only the hidden ones
     assert client.get("/jobs", params={"status": "archived"}).json()["total"] == 1
     client.patch(f"/jobs/{seeded['c']}/state", json={"status": "new"})
     assert client.get("/jobs").json()["total"] == 3
@@ -128,10 +129,10 @@ def test_dismiss_with_reason_round_trips_and_hides(client, seeded):
     assert r.status_code == 200
     job = client.get(f"/jobs/{seeded['b']}").json()
     assert job["status"] == "dismissed" and job["reason"] == "agency work"
-    # hidden from the active list, visible by status and with include_archived
+    # hidden from the active list, visible by status and in the hidden view
     assert client.get("/jobs").json()["total"] == 2
     assert client.get("/jobs", params={"status": "dismissed"}).json()["jobs"][0]["reason"] == "agency work"
-    assert client.get("/jobs", params={"include_archived": "true"}).json()["total"] == 3
+    assert client.get("/jobs", params={"hidden": "true"}).json()["total"] == 1
     assert client.get("/rejections").json()["rejections"][0]["reason"] == "agency work"
 
 

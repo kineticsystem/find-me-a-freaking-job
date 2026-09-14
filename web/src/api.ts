@@ -39,7 +39,7 @@ export function listJobs(query: JobQuery, offset = 0): Promise<JobPage> {
   if (query.status) params.set('status', query.status)
   if (query.remote) params.set('remote', query.remote)
   if (query.source) params.set('source', query.source)
-  if (query.includeArchived) params.set('include_archived', 'true')
+  if (query.hidden) params.set('hidden', 'true')
   return request<JobPage>(`/jobs?${params}`)
 }
 

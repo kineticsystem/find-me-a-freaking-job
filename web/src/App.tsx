@@ -67,7 +67,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(effective, 0) }, [
     effective.q, effective.status, effective.remote, effective.source,
-    effective.minScore, effective.sort, effective.includeArchived, load,
+    effective.minScore, effective.sort, effective.hidden, load,
   ])
   useEffect(refreshMeta, [refreshMeta])
   // While a scan runs, keep the progress line current and pick up new scores.
@@ -97,7 +97,8 @@ export default function App() {
 
   const stillVisible = (status: Status): boolean => {
     if (effective.status) return status === effective.status
-    return (status !== 'archived' && status !== 'dismissed') || effective.includeArchived
+    const hiddenStatus = status === 'archived' || status === 'dismissed'
+    return effective.hidden ? hiddenStatus : !hiddenStatus
   }
 
   const onStatus = (job: Job, status: Status, reason?: string) =>
