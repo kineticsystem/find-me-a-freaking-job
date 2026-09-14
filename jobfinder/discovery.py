@@ -40,19 +40,102 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 ATS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("greenhouse", re.compile(r"https?://(?:boards|job-boards)\.greenhouse\.io/(?:embed/job_board\?for=)?([a-z0-9_-]+)", re.I)),
+    ("greenhouse", re.compile(r"https?://boards-api\.greenhouse\.io/v1/boards/([a-z0-9_-]+)", re.I)),
+    ("lever", re.compile(r"https?://api\.lever\.co/v0/postings/([a-z0-9_-]+)", re.I)),
+    ("ashby", re.compile(r"https?://api\.ashbyhq\.com/posting-api/job-board/([a-z0-9_.-]+)", re.I)),
     ("lever", re.compile(r"https?://jobs\.(?:eu\.)?lever\.co/([a-z0-9_-]+)", re.I)),
     ("ashby", re.compile(r"https?://jobs\.ashbyhq\.com/([a-z0-9_.-]+)", re.I)),
+    # <tenant>.wd<n>.myworkdayjobs.com/[<lang>/]<site>; the API path (/wday/...)
+    # and job pages (/<site>/job/...) both start with the site.
+    ("workday", re.compile(r"https?://([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[a-z]{2}/)?([A-Za-z0-9_-]+)", re.I)),
 ]
 
 SLUG_BLOCKLIST = {"embed", "www", "api", "jobs", "boards", "job-boards", "search", "static", "job"}
 
 
+WORKDAY_NOT_SITES = {"wday", "job", "jobs", "login", "en-us"}
+
+
 def detect_ats(url: str) -> tuple[str, str] | None:
     for stype, rx in ATS_PATTERNS:
         m = rx.search(url or "")
-        if m:
-            slug = m.group(1).strip("/").lower()
-            if slug and slug not in SLUG_BLOCKLIST and len(slug) > 1:
+        if not m:
+            continue
+        if stype == "workday":
+            tenant, wd, site = m.group(1).lower(), m.group(2).lower(), m.group(3)
+            if site.lower() in WORKDAY_NOT_SITES:
+                continue
+            return stype, f"{tenant}/{wd}/{site}"
+        slug = m.group(1).strip("/").lower()
+        if slug and slug not in SLUG_BLOCKLIST and len(slug) > 1:
+            return stype, slug
+    return None
+
+
+def source_config_for(stype: str, slug: str, url: str = "") -> dict:
+    """The registry row for a detected board."""
+    if stype == "workday":
+        tenant, wd, site = slug.split("/")
+        return {"id": f"wd-{tenant}", "type": "workday", "tenant": tenant, "wd": wd, "site": site,
+                "enabled": True, "company": site.replace("_", " ").replace("-", " "), "added_from": url}
+    return {"id": f"{stype[:2]}-{slug}", "type": stype, "slug": slug, "enabled": True,
+            "company": slug.replace("-", " ").title(), "added_from": url}
+
+
+def sniff_ats(url: str) -> tuple[str, str] | None:
+    """Find the ATS behind a company careers page. First the raw HTML (an
+    embedded board or a link), then, if the listings are built by
+    JavaScript, a headless render: the page fetches its jobs from the ATS
+    API, and that request names it."""
+    from .render import _plain, render
+
+    try:
+        html_page = _plain(url)
+        for _, href in html_page.links:
+            if (hit := detect_ats(href)):
+                return hit
+        for m in re.finditer(r"https?://[^\s\"'<>)]+", html_page.text):
+            if (hit := detect_ats(m.group(0))):
+                return hit
+    except Exception as exc:  # noqa: BLE001
+        log.info("plain fetch of %s failed (%s); rendering", url, exc)
+
+    page = render(url)
+    for req in page.requests:
+        if (hit := detect_ats(req)):
+            return hit
+    for _, href in page.links:
+        if (hit := detect_ats(href)):
+            return hit
+    return probe_ats_by_name(url)
+
+
+ATS_PROBES = {
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+}
+
+
+def probe_ats_by_name(url: str) -> tuple[str, str] | None:
+    """Try the company's domain name as the board slug on each ATS. Boards
+    are almost always named after the company (acme.com -> "acme"), and a
+    page can embed one without ever calling it while rendering."""
+    from .sources.base import fetch_url
+
+    host = re.sub(r"^www\.", "", urlparse.urlparse(url).netloc.lower())
+    name = host.split(".")[0]
+    for slug in dict.fromkeys([name, name.replace("-", ""), name.replace("-", "_")]):
+        if len(slug) < 3:
+            continue
+        for stype, template in ATS_PROBES.items():
+            try:
+                data = fetch_url(template.format(slug=slug)).json()
+            except Exception:
+                continue
+            jobs = data.get("jobs") if isinstance(data, dict) else data
+            if isinstance(jobs, list) and jobs:
+                log.info("ATS probe: %s is a %s board (%d openings)", slug, stype, len(jobs))
                 return stype, slug
     return None
 
@@ -61,14 +144,11 @@ def _register(stype: str, slug: str, via: str, budget: list[int]) -> str | None:
     """Register one discovered board. `budget` is a one-element mutable counter."""
     if budget[0] <= 0:
         return None
-    source_id = f"{stype[:2]}-{slug}"
+    cfg = source_config_for(stype, slug) | {"discovered_from": via}
+    source_id = cfg["id"]
     if db.seen_discovery(f"source:{source_id}"):
         return None
     db.mark_discovery(f"source:{source_id}", "source", via)
-    cfg = {
-        "id": source_id, "type": stype, "slug": slug, "enabled": True,
-        "company": slug.replace("-", " ").title(), "discovered_from": via,
-    }
     if db.upsert_source(cfg, origin="discovered"):
         budget[0] -= 1
         log.info("discovered %s board %r (via %s)", stype, slug, via)

@@ -27,6 +27,13 @@ RUN apt-get update \
       build-essential cmake ninja-build pkg-config libcurl4-openssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# Chromium's system libraries, for rendering careers pages that build their
+# listings in JavaScript (jobfinder/render.py). The browser itself is
+# installed per user below; the libraries need root.
+RUN pip install --no-cache-dir --break-system-packages playwright==1.62.0 \
+ && playwright install-deps chromium \
+ && rm -rf /var/lib/apt/lists/*
+
 # Ubuntu 24.04 images ship a default 'ubuntu' user at uid/gid 1000. Remove it
 # so 'developer' can take the host user's uid/gid, which keeps the bind-mounted
 # directories writable and correctly owned on the host.
@@ -55,6 +62,9 @@ COPY --chown=developer:developer pyproject.toml ./
 RUN python3 -m venv /home/developer/venv \
  && python3 -c 'import tomllib; p = tomllib.load(open("pyproject.toml", "rb"))["project"]; print("\n".join(p["dependencies"] + p["optional-dependencies"]["dev"]))' \
     | /home/developer/venv/bin/pip install --no-cache-dir -r /dev/stdin
+
+# Headless Chromium for the developer user (~150 MB, into ~/.cache/ms-playwright).
+RUN /home/developer/venv/bin/playwright install chromium
 
 # The application, the agent prompts, and the built web app.
 COPY --chown=developer:developer jobfinder/ ./jobfinder/

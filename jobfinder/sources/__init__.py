@@ -15,7 +15,9 @@ from . import (  # noqa: F401  (import for the side effect of registering)
     lever,
     llm_explorer,
     remoteok,
+    webpage,
     weworkremotely,
+    workday,
 )
 
 __all__ = ["REGISTRY", "Source", "register", "build", "RawJob"]

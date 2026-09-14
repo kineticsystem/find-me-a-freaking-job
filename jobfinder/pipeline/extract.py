@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 # being redone.
 BATCH_TOKEN_BUDGET = 3000
 PER_ENTRY_CHARS = 2000
+# A rendered careers page is one entry that may list dozens of roles; it
+# gets more room and a batch to itself.
+PAGE_ENTRY_CHARS = 12500   # as_prompt_text's 12000 plus the entry header; never re-cuts the links
 
 
 def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
@@ -58,7 +61,10 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
             batch, used = [], 0
             return
         progress.unit_done(time.time() - started)
-        source_id = pending[0].source_id
+        # A batch is either one rendered page or prose entries from one source
+        # (HN comments), so the first entry's source and company stand for all.
+        source_id = str(batch[0]["source_id"])
+        fallback_company = str(batch[0].get("company") or "")
         for j in result.jobs:
             if not j.title:
                 continue
@@ -66,7 +72,7 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
             out.append(
                 RawJob(
                     source_id=source_id,
-                    company=clean(j.company) or "Unknown",
+                    company=clean(j.company) or fallback_company or "Unknown",
                     title=clean(j.title),
                     location=clean(j.location),
                     url=j.url,
@@ -87,13 +93,17 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
         if index >= max_batches:
             log.info("extraction capped at %d batches this run", max_batches)
             break
-        text = truncate(job.description, PER_ENTRY_CHARS)
+        is_page = job.source_id.startswith("web-") or job.source_id.startswith("explore-")
+        text = truncate(job.description, PAGE_ENTRY_CHARS if is_page else PER_ENTRY_CHARS)
         cost = estimate_tokens(text)
-        if batch and used + cost > BATCH_TOKEN_BUDGET:
+        if batch and (is_page or used + cost > BATCH_TOKEN_BUDGET):
             index += 1
             flush(index)
-        batch.append({"ref": ref, "url": job.url, "text": text})
+        batch.append({"ref": ref, "url": job.url, "text": text, "source_id": job.source_id, "company": job.company})
         used += cost
+        if is_page:                      # a page never shares a batch
+            index += 1
+            flush(index)
     if index < max_batches:
         index += 1
         flush(index)

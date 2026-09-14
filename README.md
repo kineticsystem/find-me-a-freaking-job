@@ -75,7 +75,7 @@ Change any of this later and every stored job is re-scored on the next scan, wit
 
 Nothing to do up front: the shipped list of job boards and company career pages works as is, and every scan discovers more company boards from the postings it finds.
 
-To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers URL — any Greenhouse (`boards.greenhouse.io/<company>`), Lever (`jobs.lever.co/<company>`) or Ashby (`jobs.ashbyhq.com/<company>`) page. The board is checked before it is added. The same section lets you switch any source off, or remove one that only produces noise.
+To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers page — any URL. Most company career pages are a job board underneath (Greenhouse, Lever, Ashby or Workday), even when the page hides it behind JavaScript; the app finds the board, checks it answers, and registers it, so you get every opening, structured, with its own apply link. A page with no board behind it is registered as a web page: on every scan it is rendered in a headless browser and the model reads the text to extract the roles it lists. The same section lets you switch any source off, or remove one that only produces noise.
 
 `config/sources.yaml` is the seed list used on a fresh install; edit it if you want companies followed from day one. Whether a source is on or off is decided in the web app and is not overwritten by the file.
 

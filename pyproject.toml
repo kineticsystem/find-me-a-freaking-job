@@ -12,6 +12,7 @@ dependencies = [
     "apscheduler>=3.10",
     "pypdf>=4.2",
     "python-multipart>=0.0.9",
+    "playwright==1.62.0",
 ]
 
 # The test tools, installed into the image too so tests run in the container.

@@ -283,6 +283,10 @@ def test_add_source_from_a_careers_url(client, tmp_db, monkeypatch):
     listed = {s["id"]: s for s in client.get("/sources").json()["sources"]}
     assert listed["le-acme"]["origin"] == "user" and listed["le-acme"]["deletable"] is True
     assert client.post("/sources", json={"url": "https://jobs.lever.co/acme"}).status_code == 409
+    # not an ATS URL, nothing behind the page, and the page is empty -> refused
+    from jobfinder import discovery, render
+    monkeypatch.setattr(discovery, "sniff_ats", lambda url: None)
+    monkeypatch.setattr(render, "render", lambda url: render.Rendered(url=url, text="", rendered=True))
     assert client.post("/sources", json={"url": "https://example.com/careers"}).status_code == 400
 
     class EmptyBoard(FakeBoard):
@@ -484,3 +488,76 @@ def test_only_cv_dot_ext_counts_as_the_cv(profile_dir):
     assert prof.cv_files() == [] and prof.readiness()["cv"] is False
     (profile_dir / "cv.md").write_text("# Jane Doe")
     assert [f.name for f in prof.cv_files()] == ["cv.md"] and prof.readiness()["cv"] is True
+
+
+def test_add_source_finds_the_board_behind_a_careers_page(client, tmp_db, monkeypatch):
+    """A custom careers page that loads its jobs from Greenhouse in JavaScript
+    is registered as that Greenhouse board, not as a page to read."""
+    from jobfinder import discovery
+    from jobfinder.models import RawJob
+    monkeypatch.setattr(discovery, "sniff_ats", lambda url: ("greenhouse", "examplecorp"))
+    class FakeBoard:
+        def __init__(self, cfg): self.cfg = cfg
+        def fetch(self): return [RawJob(source_id=self.cfg["id"], title="Engineer", company="Example Corp")] * 5
+    monkeypatch.setattr("jobfinder.sources.build", lambda cfg: FakeBoard(cfg))
+    r = client.post("/sources", json={"url": "https://www.examplecorp.com/careers#careers"})
+    assert r.status_code == 200, r.text
+    assert r.json()["source_id"] == "gr-examplecorp" and r.json()["how"] == "found behind the page"
+    assert r.json()["open_positions"] == 5
+
+
+def test_add_source_falls_back_to_a_rendered_page(client, tmp_db, monkeypatch):
+    from jobfinder import discovery, render
+    monkeypatch.setattr(discovery, "sniff_ats", lambda url: None)
+    monkeypatch.setattr(render, "render", lambda url: render.Rendered(url=url, text="Open roles\n" + "Senior Engineer, Acme. " * 20, links=[("Senior Engineer", "https://acme.example/jobs/1")], rendered=True))
+    r = client.post("/sources", json={"url": "acme.example/careers"})
+    assert r.status_code == 200, r.text
+    assert r.json()["type"] == "webpage" and r.json()["source_id"] == "web-acme-example"
+    src = {s["id"]: s for s in client.get("/sources").json()["sources"]}["web-acme-example"]
+    assert src["config"]["url"] == "https://acme.example/careers" and src["origin"] == "user"
+    # an empty page is refused
+    monkeypatch.setattr(render, "render", lambda url: render.Rendered(url=url, text="Loading…", rendered=True))
+    assert client.post("/sources", json={"url": "https://blank.example/"}).status_code == 400
+
+
+def test_webpage_source_yields_one_entry_for_extraction(monkeypatch):
+    from jobfinder import render
+    from jobfinder.sources import build
+    page = render.Rendered(url="https://acme.example/careers", text="Roles: Engineer; Designer. " + "Acme builds robots for factories. " * 10, links=[("Engineer", "https://acme.example/jobs/eng"), ("About", "https://acme.example/about")], rendered=True)
+    monkeypatch.setattr("jobfinder.sources.webpage.render", lambda url: page)
+    jobs = build({"id": "web-acme-example", "type": "webpage", "url": page.url, "company": "Acme"}).fetch()
+    assert len(jobs) == 1 and jobs[0].needs_extraction and jobs[0].company == "Acme"
+    assert "Roles: Engineer" in jobs[0].description and "https://acme.example/jobs/eng" in jobs[0].description
+    monkeypatch.setattr("jobfinder.sources.webpage.render", lambda url: render.Rendered(url=url, text="", rendered=True))
+    assert build({"id": "web-x", "type": "webpage", "url": "https://x.example"}).fetch() == []
+
+
+def test_workday_urls_are_recognised_and_configured():
+    from jobfinder.discovery import detect_ats, source_config_for
+    assert detect_ats("https://examplecorp.wd1.myworkdayjobs.com/en-US/Example_Corp/introduceYourself") == ("workday", "examplecorp/wd1/Example_Corp")
+    assert detect_ats("https://acme.wd5.myworkdayjobs.com/External/job/Berlin/Engineer_R123") == ("workday", "acme/wd5/External")
+    assert detect_ats("https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/External/jobs") is None   # the API path, not a site
+    cfg = source_config_for("workday", "examplecorp/wd1/Example_Corp", "https://x")
+    assert cfg["id"] == "wd-examplecorp" and cfg["tenant"] == "examplecorp" and cfg["site"] == "Example_Corp" and cfg["company"] == "Example Corp"
+    assert source_config_for("greenhouse", "acme")["id"] == "gr-acme"   # first two letters of the type
+
+
+def test_workday_adapter_pages_and_reads_details(monkeypatch):
+    import httpx
+    from jobfinder.sources import build
+    from jobfinder.sources import base
+    listing = {0: {"total": 45, "jobPostings": [{"title": f"Role {i}", "externalPath": f"/job/X/Role-{i}", "locationsText": "Berlin"} for i in range(20)]},
+               20: {"total": 0, "jobPostings": [{"title": f"Role {i}", "externalPath": f"/job/X/Role-{i}", "locationsText": "Berlin"} for i in range(20, 40)]},
+               40: {"total": 0, "jobPostings": [{"title": f"Role {i}", "externalPath": f"/job/X/Role-{i}", "locationsText": "Berlin"} for i in range(40, 45)]}}
+    class FakeClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json, headers):
+            return httpx.Response(200, json=listing[json["offset"]], request=httpx.Request("POST", url))
+        def get(self, url, headers):
+            return httpx.Response(200, json={"jobPostingInfo": {"jobDescription": "<p>Build robots</p>", "externalUrl": "https://wd/" + url.rsplit("/", 1)[-1]}}, request=httpx.Request("GET", url))
+    monkeypatch.setattr(base, "http_client", FakeClient)
+    monkeypatch.setattr("jobfinder.sources.workday.http_client", FakeClient)
+    jobs = build({"id": "wd-acme", "type": "workday", "tenant": "acme", "wd": "wd1", "site": "Ext"}).fetch()
+    assert len(jobs) == 45                                   # all three pages, despite total only on the first
+    assert jobs[0].description == "Build robots" and jobs[0].url.startswith("https://wd/") and jobs[0].location == "Berlin"

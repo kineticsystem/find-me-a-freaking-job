@@ -57,13 +57,13 @@ Every run gets a directory under `runs/` holding each session's prompt, the open
 
 The system is not limited to a hardcoded source list. Four channels, kept independent so that one being blocked does not blind the others:
 
-**A. Harvest** — every fetched posting's apply link and body text is scanned for Greenhouse / Lever / Ashby URLs. Recognised boards are registered as permanent sources. This is the channel that compounds: one aggregator hit at a company becomes that company's entire board, fetched directly, on the next run. The first run typically adds ten boards; HN comment bodies alone yielded Discord, Wikimedia, DuckDuckGo, Runway and Loft Orbital.
+**A. Harvest** — every fetched posting's apply link and body text is scanned for Greenhouse / Lever / Ashby / Workday URLs. Recognised boards are registered as permanent sources. This is the channel that compounds: one aggregator hit at a company becomes that company's entire board, fetched directly, on the next run. The first run typically adds ten boards; HN comment bodies alone yielded Discord, Wikimedia, DuckDuckGo, Runway and Loft Orbital.
 
 **B. Keyword** — the CV's own vocabulary (from the profile digest) is pushed through the aggregator APIs that honour filters (Jobicy's `tag` and `geo`). Ephemeral: these are queries, not stored sources.
 
 **C. Web search** — classic search-engine scraping for ATS URLs. Kept, but best-effort: DuckDuckGo, searx, Brave and Startpage all captcha-gate a headless client, so this channel is allowed to return nothing without failing the run. A `search_endpoint` under `discovery` in settings can point it at a private SearXNG instance.
 
-**D. Explorer** — a source of type `llm_explorer` hands a URL to the model with `webfetch` enabled and asks for structured postings back. For sites with no API. Opt-in per source because it is the slowest channel.
+**D. Careers pages without an API** — `POST /sources` with any URL runs `discovery.sniff_ats`: the raw HTML is searched for board links and embeds; if the listings are built by JavaScript the page is rendered in headless Chromium (`jobfinder/render.py`) and the requests it makes are inspected, since a page fetches its jobs from the board's API; finally the three board APIs are probed with the domain name as the slug (boards are nearly always named after the company). A hit registers a proper board source. Only when all of that fails is the page itself registered as a `webpage` source: rendered on each scan into text plus its links (each link labelled with its row's text, so "View & Apply" becomes "Senior Engineer: View & Apply"), and handed as one entry to the extraction stage, which the model turns into postings. The older `llm_explorer` type, where the model drives `webfetch` itself, remains for hand-configured cases but is the slowest path and no longer the default.
 
 Discovery bookkeeping lives in the `discovery_log` table: which queries have been tried, which boards have been seen, which HN comments have been structured.
 
@@ -74,6 +74,8 @@ Discovery bookkeeping lives in the `discovery_log` table: which queries have bee
 | Type | Kind | Notes |
 |---|---|---|
 | `greenhouse`, `lever`, `ashby` | company ATS boards | Public JSON, no key. The best data in the system: complete, structured, per company. Given a `slug`. |
+| `workday` | company ATS board | The site's own JSON API: a paged list, then one request per posting for its description (capped per scan). Given `tenant`, `wd` and `site`, parsed from the site's URL. |
+| `webpage` | rendered page | Headless Chromium renders the page; text and labelled links go to the extraction stage as one entry. For careers pages with no board behind them. |
 | `remoteok`, `remotive`, `himalayas`, `themuse`, `arbeitnow`, `weworkremotely` | bulk aggregators | Everything they have, filtered locally. Remotive and TheMuse ignore their own filter parameters. |
 | `jobicy` | filterable aggregator | The one whose `tag` / `geo` / `industry` filters work; used by the keyword channel. |
 | `hn_hiring` | prose | Latest "Ask HN: Who is hiring?" via Algolia; comments emitted with `needs_extraction`. |

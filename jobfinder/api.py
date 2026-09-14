@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -214,29 +215,19 @@ def list_sources() -> dict[str, Any]:
 
 
 class SourceAdd(BaseModel):
-    # A careers URL on a supported ATS, e.g. https://boards.greenhouse.io/acme
-    # or https://jobs.lever.co/acme or https://jobs.ashbyhq.com/acme.
+    # Any company careers URL. A Greenhouse / Lever / Ashby board is recognised
+    # from the URL or found behind the page; anything else is followed as a
+    # rendered web page that the model reads.
     url: str = Field(..., min_length=8, max_length=500)
 
 
-@app.post("/sources")
-def add_source(body: SourceAdd) -> dict[str, Any]:
-    """Register a company board from its careers URL, after checking it answers."""
+def _register_board(stype: str, slug: str, url: str, how: str) -> dict[str, Any]:
     from .sources import build
 
-    hit = discovery.detect_ats(body.url.strip())
-    if not hit:
-        raise HTTPException(
-            400,
-            "Not a careers page I can read. Paste a Greenhouse (boards.greenhouse.io/<company>), "
-            "Lever (jobs.lever.co/<company>) or Ashby (jobs.ashbyhq.com/<company>) URL.",
-        )
-    stype, slug = hit
-    source_id = f"{stype[:2]}-{slug}"
+    cfg = discovery.source_config_for(stype, slug, url)
+    source_id = cfg["id"]
     if db.get_source(source_id):
-        raise HTTPException(409, f"{source_id} is already registered")
-    cfg = {"id": source_id, "type": stype, "slug": slug, "enabled": True,
-           "company": slug.replace("-", " ").title(), "added_from": body.url.strip()}
+        raise HTTPException(409, f"{source_id} is already registered ({how})")
     try:
         found = build(cfg).fetch()
     except Exception as exc:
@@ -244,9 +235,50 @@ def add_source(body: SourceAdd) -> dict[str, Any]:
     if not found:
         raise HTTPException(400, f"{stype} board '{slug}' answered but lists no open positions; not added")
     db.upsert_source(cfg, origin="user")
-    db.mark_discovery(f"source:{source_id}", "source", body.url.strip())
+    db.mark_discovery(f"source:{source_id}", "source", url)
     return {"ok": True, "source_id": source_id, "type": stype, "slug": slug, "open_positions": len(found),
-            "note": "its postings will be fetched on the next scan"}
+            "how": how, "note": "its postings will be fetched on the next scan"}
+
+
+@app.post("/sources")
+def add_source(body: SourceAdd) -> dict[str, Any]:
+    """Register a company from its careers URL.
+
+    1. A Greenhouse / Lever / Ashby URL is registered as that board.
+    2. Otherwise the page is fetched and, if needed, rendered in a headless
+       browser to find the ATS it loads its jobs from; found, that board is
+       registered -- complete, structured, fast.
+    3. Otherwise the page itself becomes a source: rendered on every scan
+       and read by the model, which extracts the postings it lists.
+    """
+    from . import render as render_mod
+
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    hit = discovery.detect_ats(url)
+    if hit:
+        return _register_board(*hit, url=url, how="from the URL")
+
+    hit = discovery.sniff_ats(url)
+    if hit:
+        return _register_board(*hit, url=url, how="found behind the page")
+
+    page = render_mod.render(url)
+    if len(page.text) < 200:
+        raise HTTPException(400, "That page renders to almost no text, so there is nothing to read. Is it the right URL?")
+    host = re.sub(r"^www\.", "", re.sub(r"^https?://", "", url).split("/")[0])
+    source_id = "web-" + re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
+    if db.get_source(source_id):
+        raise HTTPException(409, f"{source_id} is already registered")
+    company = host.split(".")[0].replace("-", " ").title()
+    cfg = {"id": source_id, "type": "webpage", "url": url, "enabled": True, "company": company, "added_from": url}
+    db.upsert_source(cfg, origin="user")
+    db.mark_discovery(f"source:{source_id}", "source", url)
+    return {"ok": True, "source_id": source_id, "type": "webpage", "slug": host, "open_positions": None,
+            "how": "no job board found behind the page; it will be read by the model on each scan",
+            "note": "its postings will be extracted on the next scan"}
 
 
 @app.post("/sources/{source_id}/enabled")

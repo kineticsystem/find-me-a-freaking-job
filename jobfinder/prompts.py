@@ -204,14 +204,18 @@ def extract_prompt(blobs: Sequence[dict[str, Any]]) -> str:
     body = "\n\n".join(
         f"### entry {b['ref']} (source url: {b['url']})\n{b['text']}" for b in blobs
     )
-    return f"""Each entry below is a free-text job advert (typically a Hacker News
-"Who is hiring?" comment). Convert them into structured postings.
+    return f"""Each entry below is free text that may describe jobs: a Hacker News
+"Who is hiring?" comment, or the visible text of a company's careers page
+(with the page's links listed at the end). Convert them into structured
+postings.
 
 Rules:
 - One entry may contain several roles: emit one object per role.
-- An entry that is not a job advert produces nothing.
+- An entry that lists no jobs produces nothing.
 - Copy facts only. Never invent a company, salary, or link. Unknown fields are
   the empty string.
+- For a careers page, the company is the page's owner; for each role pick
+  the link from the LINKS list that leads to that role, else use the source url.
 - If the entry has no application link, use the source url given for it.
 
 ## ENTRIES
