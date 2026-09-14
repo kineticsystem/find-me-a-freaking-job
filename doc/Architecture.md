@@ -129,7 +129,7 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 
 **Feedback loop.** Dismissing a job records a free-text `reason` on `user_state` (the UI composes it from chips plus optional text). The most recent `limits.rejections_in_prompt` reasons are rendered into every triage and deep-dive prompt as a "postings the candidate rejected, with their reasons" block, phrased as guidance about taste rather than rules, so the model generalises ("avoids consultancies") without keyword-banning. Restoring a job clears its reason. The block is deliberately not part of the criteria hash: a dismissal should shape the scoring of new postings, not trigger a re-score of everything. If the list ever grows long enough to matter, the same distillation trick as the CV digest applies — collapse the reasons into a handful of rules once, cache them, inject those.
 
-**Score precedence.** In the job list a deep-dive score supersedes the triage score it was derived from; the triage score stands in until a deep dive exists. `dismissed` and `archived` jobs are skipped by both LLM stages.
+**Score precedence.** In the job list a deep-dive score supersedes the triage score it was derived from; the triage score stands in until a deep dive exists. When the criteria have changed since a job was scored, its most recent score under the old criteria is still shown, flagged `score_stale` and drawn faded, and still used for sorting and filtering — a preferences change must not blank the list until the next scan replaces the scores. `/health` reports `stale_scores`, and the UI offers to re-score at once. `dismissed` and `archived` jobs are skipped by both LLM stages.
 
 ## The user's files
 

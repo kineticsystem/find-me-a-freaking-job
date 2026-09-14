@@ -558,3 +558,17 @@ def test_workday_adapter_pages_and_reads_details(monkeypatch):
     jobs = build({"id": "wd-acme", "type": "workday", "tenant": "acme", "wd": "wd1", "site": "Ext"}).fetch()
     assert len(jobs) == 45                                   # all three pages, despite total only on the first
     assert jobs[0].description == "Build robots" and jobs[0].url.startswith("https://wd/") and jobs[0].location == "Berlin"
+
+
+def test_scores_from_before_a_preferences_change_show_as_stale(client, seeded, criteria, monkeypatch):
+    """Changing preferences must not blank the list: the previous score stays,
+    flagged stale and still used for sorting, until the next scan."""
+    from jobfinder.pipeline import criteria as crit
+    before = client.get("/jobs").json()["jobs"]
+    assert before[0]["score"] == 92 and before[0]["score_stale"] == 0
+    monkeypatch.setattr(crit, "current_criteria_hash", lambda: "new-criteria")   # preferences changed
+    after = client.get("/jobs", params={"sort": "score"}).json()["jobs"]
+    assert [(j["score"], j["score_stale"]) for j in after] == [(92, 1), (55, 1), (None, 0)]   # same order, now stale
+    assert after[0]["summary"] == "Great C++ role"                                        # the old deep dive still shows
+    assert client.get("/health").json()["stale_scores"] == 2
+    assert client.get("/jobs", params={"min_score": 90}).json()["total"] == 1             # filters use the stale score too

@@ -19,7 +19,7 @@ from . import config as config_mod
 from .config import ROOT, Preferences, preferences, settings, write_top_level_setting
 from .config import reload as reload_config
 from .pipeline import run as run_mod
-from .pipeline.criteria import current_criteria_hash
+from .pipeline import criteria as criteria_mod
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +66,16 @@ def health() -> dict[str, Any]:
     from .pipeline import profile as prof
     from .pipeline import progress
 
+    criteria = criteria_mod.current_criteria_hash()
     return {
         "ok": True,
         "setup": prof.readiness(),
         "running": run_mod.is_running(),
         "progress": progress.snapshot(),
+        "stale_scores": db.stale_score_count(criteria),
         "next_run": scheduler.next_run(),
         "interval_minutes": settings().interval_minutes,
-        "criteria": current_criteria_hash(),
+        "criteria": criteria,
         "opencode": opencode.health_check(),
         "stats": db.stats(),
     }
@@ -486,7 +488,7 @@ def reload() -> dict[str, Any]:
     except config_mod.ConfigError as exc:
         raise HTTPException(400, exc.message) from exc
     added = discovery.seed_from_config()
-    return {"ok": True, "new_sources": added, "criteria": current_criteria_hash()}
+    return {"ok": True, "new_sources": added, "criteria": criteria_mod.current_criteria_hash()}
 
 
 # --------------------------------------------------------------------------

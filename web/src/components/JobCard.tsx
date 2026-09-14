@@ -45,7 +45,8 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
   return (
     <article className={`job${archived || dismissed ? ' is-archived' : ''}`} aria-busy={busy}>
       <div className="job-head">
-        <div className="score" data-band={band(job.score)} title={job.verdict ?? 'not yet evaluated'}>
+        <div className={`score${job.score_stale ? ' stale' : ''}`} data-band={band(job.score)}
+             title={job.score_stale ? 'Scored before your last CV or preferences change — re-scored on the next scan' : (job.verdict ?? 'not yet evaluated')}>
           {job.score ?? '–'}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>

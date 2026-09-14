@@ -107,6 +107,7 @@ a { color: var(--accent); }
 .score[data-band="strong"] { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .score[data-band="maybe"]  { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .score[data-band="weak"]   { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.score.stale { opacity: 0.45; border: 1px dashed currentColor; }
 .job-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .job-title a { color: inherit; text-decoration: none; }
 .job-title a:hover { text-decoration: underline; }

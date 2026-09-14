@@ -42,6 +42,7 @@ export interface Job {
   reason: string | null
   // from the best current evaluation; null until the model has looked at it
   score: number | null
+  score_stale: number          // 1 = from before the last CV/preferences change; re-scored on the next scan
   verdict: Verdict | null
   summary: string | null
   eligibility: string | null
@@ -83,6 +84,7 @@ export interface Progress {
 export interface Health {
   ok: boolean
   progress: Progress
+  stale_scores: number
   setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean }
   running: boolean
   next_run: string | null

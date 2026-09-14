@@ -271,27 +271,37 @@ def list_jobs(
     ch = criteria_hash or current_criteria_hash()
     sql = f"""
         -- A deep dive supersedes the triage score it was derived from; the
-        -- triage score stands in until one exists.
+        -- triage score stands in until one exists. Scores belong to the
+        -- criteria (CV + preferences) they were made under; when those have
+        -- changed since, the most recent score under the OLD criteria is
+        -- shown, flagged stale, until the next scan replaces it -- rather
+        -- than blanking the whole list until then.
         WITH best AS (
             SELECT job_id,
                    MAX(CASE WHEN stage='triage' THEN score END) AS triage_score,
                    MAX(CASE WHEN stage='deepdive' THEN id END) AS dd_id
             FROM evaluations WHERE criteria_hash = ? GROUP BY job_id
+        ),
+        stale AS (
+            SELECT job_id, MAX(id) AS eid FROM evaluations WHERE criteria_hash != ? GROUP BY job_id
         )
         SELECT j.*, COALESCE(u.status,'new') AS status, u.notes, u.reason,
-               COALESCE(d.score, b.triage_score) AS score,
-               d.verdict AS verdict, d.summary AS summary,
-               d.eligibility AS eligibility, d.eligible AS eligible,
-               d.salary AS salary, d.tech_stack AS tech_stack,
-               d.concerns AS concerns, d.rationale AS rationale
+               COALESCE(d.score, b.triage_score, o.score) AS score,
+               CASE WHEN d.score IS NULL AND b.triage_score IS NULL AND o.score IS NOT NULL THEN 1 ELSE 0 END AS score_stale,
+               COALESCE(d.verdict, o.verdict) AS verdict, COALESCE(d.summary, o.summary) AS summary,
+               COALESCE(d.eligibility, o.eligibility) AS eligibility, COALESCE(d.eligible, o.eligible) AS eligible,
+               COALESCE(d.salary, o.salary) AS salary, COALESCE(d.tech_stack, o.tech_stack) AS tech_stack,
+               COALESCE(d.concerns, o.concerns) AS concerns, COALESCE(d.rationale, o.rationale) AS rationale
         FROM jobs j
         LEFT JOIN best b ON b.job_id = j.id
         LEFT JOIN evaluations d ON d.id = b.dd_id
+        LEFT JOIN stale s ON s.job_id = j.id AND b.job_id IS NULL
+        LEFT JOIN evaluations o ON o.id = s.eid
         LEFT JOIN user_state u ON u.job_id = j.id
         -- unevaluated jobs count as 0, so min_score=0 shows everything
-        WHERE COALESCE(d.score, b.triage_score, 0) >= ?
+        WHERE COALESCE(d.score, b.triage_score, o.score, 0) >= ?
     """
-    params: list[Any] = [ch, min_score]
+    params: list[Any] = [ch, ch, min_score]
     if status:
         sql += " AND COALESCE(u.status,'new') = ?"
         params.append(status)
@@ -308,8 +318,8 @@ def list_jobs(
         params += [f"%{query}%"] * 4
 
     orders = {
-        "score": "COALESCE(d.score, b.triage_score) DESC NULLS LAST, j.first_seen DESC",
-        "newest": "j.first_seen DESC, COALESCE(d.score, b.triage_score) DESC NULLS LAST",
+        "score": "COALESCE(d.score, b.triage_score, o.score) DESC NULLS LAST, j.first_seen DESC",
+        "newest": "j.first_seen DESC, COALESCE(d.score, b.triage_score, o.score) DESC NULLS LAST",
         "company": "j.company COLLATE NOCASE ASC, j.title COLLATE NOCASE ASC",
     }
     order_by = orders.get(sort, orders["score"])
@@ -628,6 +638,17 @@ def reset_everything() -> dict[str, int]:
     with connect() as conn:
         conn.execute("VACUUM")
     return counts
+
+
+def stale_score_count(criteria_hash: str) -> int:
+    """Jobs whose only scores predate the current criteria: re-scored next scan."""
+    with connect() as conn:
+        return conn.execute(
+            """SELECT COUNT(*) FROM jobs j
+               WHERE EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id)
+                 AND NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.criteria_hash = ?)""",
+            (criteria_hash,),
+        ).fetchone()[0]
 
 
 def stats() -> dict[str, Any]:

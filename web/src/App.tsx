@@ -194,6 +194,12 @@ export default function App() {
               {(health.running ? '● scan in progress' : nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') + ` · every ${describe(health.interval_minutes)}`}
             </span>
           )}
+          {health && health.stale_scores > 0 && (
+            <span title="Faded scores are from before your last CV, notes or preferences change">
+              {health.stale_scores} score{health.stale_scores === 1 ? '' : 's'} from before your last change
+              {health.running ? ' · re-scoring now' : <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup.ready}>re-score now</button></>}
+            </span>
+          )}
           <span className="spacer" style={{ flex: 1 }} />
           <span className="archive-old">
             <button className="btn btn-sm" onClick={onArchiveOld} title="Archive 'new' jobs not seen for this many days">Archive older than</button>
