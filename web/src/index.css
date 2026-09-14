@@ -68,6 +68,8 @@ a { color: var(--accent); }
 
 .summary { color: var(--muted); font-size: 13px; margin: 0 0 10px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .btn-note { color: var(--muted); font-size: 13px; font-style: italic; }
+.scan-row { display: flex; justify-content: center; align-items: center; gap: 12px; margin: 4px 0 14px; }
+.btn-scan { padding: 10px 28px; font-size: 15px; font-weight: 600; }
 
 /* ---------- buttons ---------- */
 .btn {
