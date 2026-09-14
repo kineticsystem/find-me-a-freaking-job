@@ -1,3 +1,5 @@
+<p align="center"><img src="doc/logo.png" alt="Find Me a Freaking Job" width="320"></p>
+
 # Find Me a Freaking Job
 
 ## Introduction
