@@ -45,7 +45,9 @@ a { color: var(--accent); }
   padding: env(safe-area-inset-top) 0 0;
 }
 .topbar-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; max-width: 1100px; margin: 0 auto; }
-.brand { font-weight: 700; font-size: 17px; white-space: nowrap; }
+.brand { font-weight: 700; font-size: 17px; white-space: nowrap; display: flex; flex-direction: column; line-height: 1.2; }
+.brand-link { font-weight: 400; font-size: 12px; color: var(--muted); text-decoration: none; }
+.brand-link:hover { color: var(--accent); text-decoration: underline; }
 .brand small { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 13px; }
 .search { flex: 1; min-width: 0; display: flex; }
 .search input {

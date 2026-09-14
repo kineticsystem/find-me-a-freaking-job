@@ -159,7 +159,10 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="topbar-row">
-          <div className="brand">🎯 Find Me a Freaking Job<small>{health ? `${health.stats.jobs} stored` : ''}</small></div>
+          <div className="brand">
+            <div>🎯 Find Me a Freaking Job<small>{health ? `${health.stats.jobs} stored` : ''}</small></div>
+            <a className="brand-link" href="https://www.findmeafreakingjob.com" target="_blank" rel="noreferrer noopener">www.findmeafreakingjob.com</a>
+          </div>
           <div className="search">
             <input
               type="search" placeholder="Search title, company, location…"
