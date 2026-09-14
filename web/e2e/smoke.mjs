@@ -4,7 +4,8 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
-const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:8099'
+// Default to the throwaway test instance that `dock.sh <name> test` starts, never to the real one.
+const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:8098'
 const OUT = 'e2e/screenshots'
 mkdirSync(OUT, { recursive: true })
 
@@ -52,13 +53,15 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   check(cols === 2, `desktop: two-column grid (${cols} cols)`)
   await page.screenshot({ path: `${OUT}/desktop.png` })
 
-  // search narrows and matches
-  await page.fill('input[type=search]', 'python')
+  // search narrows and matches: use the first card's company, which some
+  // but not all postings share whatever the dataset
+  const term = (await page.locator('.job-company').first().textContent()).split(' · ')[0].trim()
+  await page.fill('input[type=search]', term)
   await waitTotalNot(page, all)
   const hits = await total(page)
-  check(hits > 0 && hits < all, `search "python": ${hits} of ${all}`)
+  check(hits > 0 && hits < all, `search "${term}": ${hits} of ${all}`)
   const texts = await page.locator('.job').allTextContents()
-  check(texts.every((t) => /python/i.test(t)), 'search: every visible card mentions python (title/company/location/description)')
+  check(texts.every((t) => t.toLowerCase().includes(term.toLowerCase())), `search: every visible card mentions "${term}"`)
   await page.fill('input[type=search]', '')
   await waitTotal(page, all)
 
@@ -82,18 +85,16 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
 
   // archive first card, then find it under status=archived, then unarchive
   const first = freshCard(page)
-  const title = await first.locator('.job-title').textContent()
+  const id = await first.getAttribute('data-id')
   await first.locator('button:has-text("Archive")').click()
-  await page.waitForFunction((t) => ![...document.querySelectorAll('.job .job-title')].some((e) => e.textContent.includes(t)), title)
-  check(!(await page.locator('.job-title').allTextContents()).includes(title), 'archive: card leaves the active list')
+  await page.waitForSelector(`.job[data-id="${id}"]`, { state: 'detached' })
+  check(true, 'archive: card leaves the active list')
   check((await total(page)) === all - 1, 'archive: total decrements')
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, 'archived')
-  await page.waitForSelector('.job.is-archived')
-  const archivedTitles = await page.locator('.job.is-archived .job-title').allTextContents()
-  check(archivedTitles.includes(title), 'status=archived: shows the archived card')
-  await page.locator('.job.is-archived', { hasText: title }).locator('button:has-text("Unarchive")').click()
-  // other jobs may genuinely be archived; only this card must leave the view
-  await page.waitForFunction((t) => ![...document.querySelectorAll('.job.is-archived .job-title')].some((e) => e.textContent.includes(t)), title)
+  await page.waitForSelector(`.job.is-archived[data-id="${id}"]`)
+  check(true, 'status=archived: shows the archived card')
+  await page.locator(`.job[data-id="${id}"]`).locator('button:has-text("Unarchive")').click()
+  await page.waitForSelector(`.job[data-id="${id}"]`, { state: 'detached' })   // other jobs may genuinely be archived
   check(true, 'unarchive: leaves the archived view')
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, '')
   await waitTotal(page, all)
@@ -101,9 +102,9 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
 
   // shortlist -> applied -> reset round trip
   const card = freshCard(page)
-  const t2 = await card.locator('.job-title').textContent()
+  const id2 = await card.getAttribute('data-id')
   // other jobs may genuinely be shortlisted or applied; wait on this card only
-  const thisCard = page.locator('.job', { hasText: t2 })
+  const thisCard = page.locator(`.job[data-id="${id2}"]`)
   await card.locator('button:has-text("Shortlist")').click()
   await thisCard.locator('.chip[data-value=shortlisted]').waitFor()
   check(true, 'shortlist: status chip appears')
@@ -117,25 +118,25 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   // "Not for me" with chips + free text -> dismissed with a reason, hidden
   // from the active list, visible under status=dismissed, then restored.
   const d = freshCard(page)
-  const dTitle = await d.locator('.job-title').textContent()
+  const dId = await d.getAttribute('data-id')
+  const dCard = page.locator(`.job[data-id="${dId}"]`)
   await d.locator('button:has-text("Not for me")').click()
   check(await d.locator('.dismiss').isVisible(), 'not for me: asks why with chips')
   await d.locator('.chip-btn:has-text("agency / consultancy")').click()
   await d.locator('.chip-btn:has-text("on-site")').click()
   await d.locator('.dismiss input').fill('e2e test reason')
   await d.locator('.dismiss button:has-text("Not for me")').click()
-  await page.waitForFunction((t) => ![...document.querySelectorAll('.job .job-title')].some((e) => e.textContent.includes(t)), dTitle)
+  await dCard.waitFor({ state: 'detached' })
   check((await total(page)) === all - 1, 'not for me: card leaves the active list')
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, 'dismissed')
-  await page.waitForSelector('.job-meta.reason')
-  const shownReason = await page.locator('.job', { hasText: dTitle }).locator('.job-meta.reason').textContent()
+  await dCard.locator('.job-meta.reason').waitFor()
+  const shownReason = await dCard.locator('.job-meta.reason').textContent()
   check(shownReason.includes('agency / consultancy') && shownReason.includes('on-site') && shownReason.includes('e2e test reason'),
         `dismissed view: reason shown (${shownReason.trim()})`)
   const rej = await (await fetch(BASE + '/rejections')).json()
   check(rej.rejections.some((r) => r.reason.includes('e2e test reason')), 'API /rejections: reason recorded for the model')
-  await page.locator('.job', { hasText: dTitle }).locator('button:has-text("Restore")').click()
-  // other jobs may genuinely be dismissed; only this card must leave the view
-  await page.waitForFunction((t) => ![...document.querySelectorAll('.job .job-title')].some((e) => e.textContent.includes(t)), dTitle)
+  await dCard.locator('button:has-text("Restore")').click()
+  await dCard.waitFor({ state: 'detached' })   // other jobs may genuinely be dismissed
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, '')
   await waitTotal(page, all)
   const rej2 = await (await fetch(BASE + '/rejections')).json()
@@ -218,14 +219,16 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.waitForSelector('.source-list li:has-text("Replit")')
   const row = page.locator('.source-list li:has-text("Replit")')
   await row.locator('input[type=checkbox]').click()
-  await page.waitForFunction(() => document.querySelector('.source-list li.off'))
+  await row.locator('input[type=checkbox]:not(:checked)').waitFor()   // this row, not any switched-off row
   check((await (await fetch(BASE + '/sources')).json()).sources.find((s) => s.id === 'as-replit').enabled === 0, 'sources: toggle off persists')
   await row.locator('button:has-text("Remove")').click()
   await page.waitForSelector('.toast:has-text("Removed as-replit")')
   check(!(await (await fetch(BASE + '/sources')).json()).sources.some((s) => s.id === 'as-replit'), 'sources: removed')
-  await page.fill('input[aria-label="careers URL"]', 'https://example.com/careers')
+  // a host that does not exist: nothing to fetch, render or probe
+  // (example.com is not a safe choice -- a Greenhouse board named "example" exists)
+  await page.fill('input[aria-label="careers URL"]', 'https://careers.zzqx-nonexistent-domain.invalid/jobs')
   await page.click('.sources button:has-text("Add")')
-  await page.waitForSelector('.toast.error')
+  await page.waitForSelector('.toast.error', { timeout: 90000 })
   check(true, 'sources: an unsupported URL is refused with an explanation')
 
   // danger zone: the confirmation gate only; never confirmed against real data

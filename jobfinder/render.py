@@ -84,7 +84,11 @@ def render(url: str) -> Rendered:
                 browser.close()
     except Exception as exc:  # noqa: BLE001 - a page that will not render is a source that yields nothing
         log.warning("could not render %s (%s); falling back to plain fetch", url, exc)
-        return _plain(url)
+        try:
+            return _plain(url)
+        except Exception as exc2:  # noqa: BLE001 - unreachable host, refused connection, ...
+            log.warning("could not fetch %s at all: %s", url, exc2)
+            return Rendered(url=url, text="", rendered=False)
 
     links = [(clean(t), h) for t, h in links if h and h.startswith("http")]
     return Rendered(url=url, text=clean(text)[:MAX_TEXT_CHARS], links=links[:MAX_LINKS], requests=requests, rendered=True)

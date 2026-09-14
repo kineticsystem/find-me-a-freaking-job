@@ -263,13 +263,16 @@ def add_source(body: SourceAdd) -> dict[str, Any]:
     if hit:
         return _register_board(*hit, url=url, how="from the URL")
 
-    hit = discovery.sniff_ats(url)
+    try:
+        hit = discovery.sniff_ats(url)
+    except Exception as exc:  # noqa: BLE001 - never a 500 for a bad URL
+        raise HTTPException(400, f"Could not reach that page: {type(exc).__name__}: {exc}") from exc
     if hit:
         return _register_board(*hit, url=url, how="found behind the page")
 
     page = render_mod.render(url)
     if len(page.text) < 200:
-        raise HTTPException(400, "That page renders to almost no text, so there is nothing to read. Is it the right URL?")
+        raise HTTPException(400, "That page could not be fetched, or renders to almost no text, so there is nothing to read. Is it the right URL?")
     host = re.sub(r"^www\.", "", re.sub(r"^https?://", "", url).split("/")[0])
     source_id = "web-" + re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
     if db.get_source(source_id):

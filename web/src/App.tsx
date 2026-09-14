@@ -37,9 +37,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const reqId = useRef(0)
 
+  // One dismiss timer at a time: a new toast cancels the previous one's, or
+  // the old timer would wipe the new message moments after it appeared.
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error })
-    setTimeout(() => setToast(null), error ? 5000 : 2500)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), error ? 5000 : 2500)
   }, [])
 
   const refreshMeta = useCallback(() => {

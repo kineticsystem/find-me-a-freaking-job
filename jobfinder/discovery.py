@@ -121,16 +121,23 @@ def probe_ats_by_name(url: str) -> tuple[str, str] | None:
     """Try the company's domain name as the board slug on each ATS. Boards
     are almost always named after the company (acme.com -> "acme"), and a
     page can embed one without ever calling it while rendering."""
-    from .sources.base import fetch_url
+    import httpx
+
+    from .config import settings
 
     host = re.sub(r"^www\.", "", urlparse.urlparse(url).netloc.lower())
     name = host.split(".")[0]
+    # Up to nine quick requests; a board that does not answer in a few
+    # seconds is not the one we are looking for.
+    client = httpx.Client(timeout=6, follow_redirects=True, headers={"User-Agent": settings().http.user_agent})
     for slug in dict.fromkeys([name, name.replace("-", ""), name.replace("-", "_")]):
         if len(slug) < 3:
             continue
         for stype, template in ATS_PROBES.items():
             try:
-                data = fetch_url(template.format(slug=slug)).json()
+                resp = client.get(template.format(slug=slug))
+                resp.raise_for_status()
+                data = resp.json()
             except Exception:
                 continue
             jobs = data.get("jobs") if isinstance(data, dict) else data

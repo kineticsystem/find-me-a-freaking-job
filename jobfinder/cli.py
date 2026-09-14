@@ -134,6 +134,55 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_seed_demo(args: argparse.Namespace) -> int:
+    """Fill an EMPTY database with fictional postings and scores, so a test
+    instance has something to show without the network or the model."""
+    import random
+
+    from .models import NormalizedJob, fingerprint
+    from .pipeline.criteria import current_criteria_hash
+
+    db.init_db()
+    with db.connect() as conn:
+        if conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]:
+            print("database is not empty; seed-demo only fills an empty one", file=sys.stderr)
+            return 1
+    rng = random.Random(42)
+    companies = ["Acme Robotics", "Globex", "Initech", "Umbrella Software", "Hooli", "Vandelay Systems", "Stark Labs", "Wayne Tech"]
+    titles = ["Senior Software Engineer", "Backend Engineer", "Platform Engineer", "C++ Developer", "Python Developer",
+              "Staff Engineer, Infrastructure", "Full Stack Engineer", "Site Reliability Engineer", "Embedded Software Engineer"]
+    locations = [("Remote, Europe", "remote"), ("Berlin, Germany", "hybrid"), ("Dublin, Ireland", "onsite"), ("Remote, US", "remote"), ("Amsterdam", "hybrid")]
+    criteria = current_criteria_hash()
+    n = 0
+    with db.connect() as conn:
+        for i in range(40):
+            company = companies[i % len(companies)]; title = titles[i % len(titles)]
+            location, remote = locations[i % len(locations)]
+            job = NormalizedJob(
+                fingerprint=fingerprint(company, title, location), source_id="demo",
+                company=company, title=title, location=location, remote_type=remote,  # type: ignore[arg-type]
+                url=f"https://example.com/{company.lower().replace(' ', '-')}/jobs/{i}", apply_url="",
+                description=f"{company} is hiring a {title} in {location}. You will build and run services in Python and C++, "
+                            f"work with Kubernetes and PostgreSQL, and own what you ship.\n\n• 5+ years of experience\n• Strong fundamentals\n• Fluent English",
+                salary_raw="EUR 80000 - 110000" if i % 3 == 0 else "", tags=["python", "c++"],
+            )
+            job_id, _ = db.upsert_job(conn, job); n += 1
+            if i % 5 != 4:                                  # most are scored, a few are not
+                score = rng.randint(20, 95)
+                db.record_evaluation(conn, job_id=job_id, run_id=None, stage="triage", criteria_hash=criteria,
+                                     score=score, verdict="strong" if score >= 70 else "maybe" if score >= 45 else "reject",
+                                     rationale="demo score", model="demo")
+                if score >= 70:
+                    db.record_evaluation(conn, job_id=job_id, run_id=None, stage="deepdive", criteria_hash=criteria,
+                                         score=score, verdict="strong", model="demo", eligible=True,
+                                         summary=f"A {title.lower()} role at {company}; a demo posting.",
+                                         eligibility="Demo: eligible.", salary=job.salary_raw, tech_stack=["Python", "C++"],
+                                         concerns=["demo data"], rationale="demo")
+    db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
+    print(f"seeded {n} fictional postings under criteria {criteria}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     from .pipeline.profile import cv_text, profile_dir
 
@@ -186,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="check the environment").set_defaults(func=cmd_doctor)
     sub.add_parser("check", help="validate the config files; exit 2 with the reason if not").set_defaults(func=cmd_check)
+    sub.add_parser("seed-demo", help="fill an empty database with fictional postings (for a test instance)").set_defaults(func=cmd_seed_demo)
     sub.add_parser("clean-descriptions", help="re-strip HTML from stored job descriptions").set_defaults(func=cmd_clean_descriptions)
     return p
 

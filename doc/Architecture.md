@@ -207,10 +207,10 @@ The toolchain the image contains, for reference: Python 3.12 with the dependenci
 
 ## Tests
 
-- `tests/` — pytest against a temporary SQLite file, exercising the API contract the UI depends on: ordering, score precedence, every filter, pagination totals, state round-trips, archive visibility and reversibility, bulk archive by id and by age (and that it spares shortlisted jobs), delete cascade, facets, and that the pipeline skips archived jobs.
-- `web/e2e/smoke.mjs` — Playwright, headless Chromium, against a running server with real data. Drives every user action at desktop and phone viewports and reverses each one, so the database is unchanged afterwards. Also asserts the responsive invariants: column count, no horizontal overflow, collapsed filters, tap-target height.
+- `tests/` — pytest. Every test runs against a throwaway SQLite file and a throwaway config directory (an autouse fixture in `conftest.py` redirects `CONFIG_DIR`, the settings and preferences paths, and the profile directory), so no test can reach real files by any path. They cover the API contract the UI depends on: ordering and score precedence, every filter, pagination, state round-trips, archive and dismiss visibility, bulk archive, delete cascade, facets, the pipeline skipping hidden jobs, settings persistence, the profile upload, preferences save and validation, the resets, sources by URL, and the fail-fast on a broken config.
+- `web/e2e/smoke.mjs` and `web/e2e/prefs-form.mjs` — Playwright, headless Chromium, against a **running test instance**: `./docker/dock.sh <name> test` starts one from the same image with a temporary config, a fictional profile, a database seeded by `jobfinder.sh seed-demo`, no model server, on port 8098, runs both suites plus pytest, and removes it. The suites act only on cards with no user status, wait on their own card by `data-id`, and intercept the requests that would change settings or preferences. They used to run against the live instance and reversed their changes afterwards; a run cut short, or a card that happened to be the user's, changed real data three times in one day.
 
-Both suites have caught real bugs: NULL list fields crashing the card renderer, an age comparison that compared ISO timestamps lexically against SQLite's `datetime('now')` and so never matched, and 28px buttons on a phone.
+Both suites have caught real bugs: NULL list fields crashing the card renderer, an age comparison that compared ISO timestamps lexically against SQLite's `datetime('now')`, 28px buttons on a phone, a disabled Save button swallowing the click that committed a chip, a settings endpoint that wrote before validating, an unreachable URL answered with a 500, and a toast dismissed by the previous toast's timer.
 
 ## Layout
 

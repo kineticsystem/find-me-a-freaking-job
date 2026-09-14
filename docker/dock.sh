@@ -33,6 +33,8 @@ function display_usage() {
     logs    Follow the server log
     shell   Open a shell inside the running container (extra args go to bash)
     run     Run one search now:   ./dock.sh <name> run [--no-llm]
+    test    Run every test against a THROWAWAY instance (own config, profile
+            and database, fictional data, port 8098); never touches yours
     clean   Stop, and remove the container and the image\n
     State (config/, profile/, data/, runs/) lives in the repo on the host and
     survives all of these.\n"
@@ -102,6 +104,51 @@ case "$command" in
         ;;
     run)
         docker exec "$name" run-once.sh "$@"
+        ;;
+    test)
+        # A second container from the same image with fake everything: a
+        # temporary config/profile/data, a fictional CV, seeded fictional
+        # postings, no model server of its own, on port 8098. The API tests
+        # run inside it and the browser suite runs against it from the host.
+        # Nothing it does can reach the real instance's files or database.
+        tname="${name}-test"
+        tdir=$(mktemp -d /tmp/jobfinder-test.XXXXXX)
+        mkdir -p "$tdir/config" "$tdir/profile" "$tdir/data" "$tdir/runs"
+        cp ../config/settings.example.yaml ../config/preferences.example.yaml ../config/sources.yaml "$tdir/config/"
+        cp ../config/settings.example.yaml "$tdir/config/settings.yaml"
+        sed -i 's/^run_on_start: .*/run_on_start: false/' "$tdir/config/settings.yaml"
+        cat > "$tdir/config/preferences.yaml" <<'YAML'
+based_in: Testland
+citizenship: [Testland, EU]
+titles: [Senior Software Engineer, Backend Engineer]
+must_have: [Python]
+location_rules:
+  - {country: Testland, remote: any}
+YAML
+        cp ../profile/notes.example.md "$tdir/profile/"
+        printf '# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.\n' > "$tdir/profile/cv.md"
+        printf 'I want remote backend work at a product company. No agencies.\n' > "$tdir/profile/notes.md"
+        docker rm -f "$tname" >/dev/null 2>&1 || true
+        docker run -d --name "$tname" --network host \
+            -e JOBFINDER_API_PORT=8098 -e JOBFINDER_NO_LLAMA=1 \
+            -v "$tdir/config:/home/developer/app/config" -v "$tdir/profile:/home/developer/app/profile" \
+            -v "$tdir/data:/home/developer/app/data" -v "$tdir/runs:/home/developer/app/runs" \
+            "$name:latest" bash -c 'jobfinder.sh init >/dev/null && jobfinder.sh seed-demo && exec start.sh' >/dev/null
+        echo "test instance: $tname on http://127.0.0.1:8098/ (files in $tdir)"
+        for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8098/health >/dev/null 2>&1 && break; sleep 1; done
+        rc=0
+        echo "--- API tests (inside the test container) ---"
+        docker exec "$tname" test.sh -q || rc=1
+        if [ -d ../web/node_modules ] && command -v pnpm >/dev/null; then
+            echo "--- browser tests (from the host, against the test instance) ---"
+            (cd ../web && E2E_BASE=http://127.0.0.1:8098 pnpm e2e) || rc=1
+        else
+            echo "(browser tests skipped: need pnpm and web/node_modules on the host; run 'cd web && pnpm install')"
+        fi
+        docker rm -f "$tname" >/dev/null
+        rm -rf "$tdir"
+        [ $rc -eq 0 ] && echo "ALL TESTS PASSED (nothing of yours was touched)" || echo "TESTS FAILED"
+        exit $rc
         ;;
     clean)
         docker compose down --rmi local --remove-orphans

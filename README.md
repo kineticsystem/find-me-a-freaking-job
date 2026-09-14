@@ -183,6 +183,14 @@ Edit, then `./docker/dock.sh jobfinder stop` and `start` again.
 
 At the bottom of ⚙ Settings, in red: **Delete all jobs** clears every posting, score, decision and run but keeps your sources, CV, notes and preferences, so the next scan starts the search from scratch with the same setup. **Reset everything** also drops the sources back to the seed list. Both make you type `DELETE` and refuse to run during a scan. Neither touches the files.
 
+## Tests
+
+```bash
+./docker/dock.sh jobfinder test
+```
+
+Runs every test against a throwaway instance — its own config, a fictional CV, fictional postings, port 8098 — and removes it afterwards. It never touches your data.
+
 ## Useful commands
 
 ```bash

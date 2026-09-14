@@ -11,7 +11,10 @@ if ! python -m jobfinder check; then
     exit 2
 fi
 
-if [ -x modules/llama.cpp/build/bin/llama-server ]; then
+if [ -n "$JOBFINDER_NO_LLAMA" ]; then
+    echo "start.sh: JOBFINDER_NO_LLAMA set; not starting llama-server (a test instance uses the main one)"
+    LLAMA_PID=""
+elif [ -x modules/llama.cpp/build/bin/llama-server ]; then
     llama-server.sh &
     LLAMA_PID=$!
     echo "start.sh: llama-server pid $LLAMA_PID"

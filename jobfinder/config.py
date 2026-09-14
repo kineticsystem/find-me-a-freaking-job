@@ -120,6 +120,8 @@ class Settings(BaseModel):
             self.llm.base_url = url
         if host := os.environ.get("JOBFINDER_API_HOST"):
             self.api.host = host
+        if port := os.environ.get("JOBFINDER_API_PORT"):
+            self.api.port = int(port)
         if self.opencode.model is None:
             self.opencode.model = self.llm.opencode_model
     limits: Limits = Field(default_factory=Limits)

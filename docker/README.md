@@ -53,6 +53,7 @@ git submodule update --init
 ./docker/dock.sh jobfinder logs      # follow the log
 ./docker/dock.sh jobfinder run       # one search run, now (add --no-llm to skip inference)
 ./docker/dock.sh jobfinder shell     # a shell inside the container
+./docker/dock.sh jobfinder test      # every test, against a throwaway instance (see below)
 ./docker/dock.sh jobfinder stop
 ./docker/dock.sh jobfinder clean     # remove container and image; your state stays
 ```
@@ -62,6 +63,10 @@ The first `build` compiles the llama.cpp fork with CUDA, which takes several min
 After `start`, the model takes a few seconds to load (the app waits for it), then the web app is at **http://127.0.0.1:8099/** and, because the container shares the host's network, at `http://<host ip>:8099/` from any device on your network. The model server is on `:8084`, exactly where it was when it ran on the host, so anything else on the machine that used it keeps working.
 
 The container restarts itself after a reboot or a crash (`restart: unless-stopped`); `stop` is the only thing that keeps it down.
+
+## Tests
+
+`./docker/dock.sh jobfinder test` starts a second container from the same image with everything fake: a temporary config, a fictional CV and notes, a database seeded with fictional postings (`jobfinder.sh seed-demo`), no model server of its own, on port 8098. The API tests run inside it and the browser suite runs against it from the host (needs `pnpm` and `web/node_modules`; otherwise it is skipped). The container and its files are removed afterwards. Nothing it does can reach your instance's files or database — the suites used to share them, and more than once changed the scan interval or a job's status.
 
 ## Inside the container
 

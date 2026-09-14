@@ -573,3 +573,15 @@ def test_scores_from_before_a_preferences_change_show_as_stale(client, seeded, c
     assert after[0]["summary"] == "Great C++ role"                                        # the old deep dive still shows
     assert client.get("/health").json()["stale_scores"] == 2
     assert client.get("/jobs", params={"min_score": 90}).json()["total"] == 1             # filters use the stale score too
+
+
+def test_add_source_with_an_unreachable_host_is_a_clear_refusal(client, tmp_db, monkeypatch):
+    from jobfinder import discovery, render
+    from jobfinder.sources import base
+    def boom(url, **kw): raise ConnectionError("Name or service not known")
+    monkeypatch.setattr(base, "fetch_url", boom)
+    monkeypatch.setattr(render, "sync_playwright", None, raising=False)
+    monkeypatch.setattr(discovery, "probe_ats_by_name", lambda url: None)
+    r = client.post("/sources", json={"url": "https://careers.zzqx-nonexistent-domain.invalid/jobs"})
+    assert r.status_code == 400, r.text
+    assert "nothing to read" in r.json()["detail"] or "Could not reach" in r.json()["detail"]

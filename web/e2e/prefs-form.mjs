@@ -4,7 +4,8 @@
 // actionability bypass), so a disabled button swallowing a click would fail.
 import { chromium } from 'playwright'
 
-const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:8099'
+// Default to the throwaway test instance that `dock.sh <name> test` starts, never to the real one.
+const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:8098'
 let failures = 0
 const check = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++ }
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
@@ -54,11 +55,13 @@ await chipInput('Nice to have').fill('Go, Zig'); await chipInput('Nice to have')
 sent = await clickSave()
 check(sent && sent.nice_to_have.includes('Go') && sent.nice_to_have.includes('Zig'), 'nice_to_have: comma-separated entry adds two chips')
 
-// 5. chip: remove with ×
-const firstDeal = (await chips('Dealbreakers'))[0]
-await realClick(page.locator(`.prefs .chip-value:has-text("${firstDeal}") button`).first())
+// 5. chip: add one, then remove it with ×
+await chipInput('Dealbreakers').fill('e2e-dealbreaker'); await chipInput('Dealbreakers').press('Enter')
 sent = await clickSave()
-check(sent && !sent.dealbreakers.includes(firstDeal), `dealbreakers: × removes a chip ("${firstDeal}")`)
+check(sent && sent.dealbreakers.includes('e2e-dealbreaker'), 'dealbreakers: chip added')
+await realClick(page.locator('.prefs .chip-value:has-text("e2e-dealbreaker") button').first())
+sent = await clickSave()
+check(sent && !sent.dealbreakers.includes('e2e-dealbreaker'), 'dealbreakers: × removes the chip')
 
 // 6. chip: duplicate is ignored
 await chipInput('Titles').fill(original.titles[0]); await chipInput('Titles').press('Enter')
@@ -81,7 +84,9 @@ await realClick(junior)
 sent = await clickSave()
 check(sent && sent.seniority.includes('junior') !== wasOn, `seniority: toggle ${wasOn ? 'off' : 'on'} saved`)
 
-// 10. salary: amount, currency, period, then off
+// 10. salary: on (if it was off), amount, currency, period, then off
+const atLeast = page.locator('.prefs label.inline input[type=checkbox]')
+if (!(await atLeast.isChecked())) await realClick(atLeast)
 await page.fill('.prefs input[aria-label="amount"]', '95000')
 await page.selectOption('.prefs select[aria-label="currency"]', 'USD')
 await page.selectOption('.prefs select[aria-label="period"]', 'month')
@@ -91,7 +96,12 @@ await realClick(page.locator('.prefs label.inline input[type=checkbox]'))
 sent = await clickSave()
 check(sent && sent.min_salary === null, 'min_salary: unchecking "at least" saves null')
 
-// 11. location rules: edit, reorder, add, remove
+// 11. location rules: edit, reorder, add, remove (reordering needs two rows)
+if ((await page.locator('.rules li').count()) < 2) {
+  await realClick(page.locator('button:has-text("+ Add a market")'))
+  await page.fill('.rules li >> nth=-1 >> input[aria-label="market"]', 'Second Market')
+  await clickSave()
+}
 const n0 = await page.locator('.rules li').count()
 await page.fill('.rules li >> nth=0 >> input[aria-label="market"]', 'Canada')
 await page.selectOption('.rules li >> nth=0 >> select[aria-label="remote"]', 'any')
