@@ -67,6 +67,7 @@ a { color: var(--accent); }
 .filter-toggle { display: none; }
 
 .summary { color: var(--muted); font-size: 13px; margin: 0 0 10px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn-note { color: var(--muted); font-size: 13px; font-style: italic; }
 
 /* ---------- buttons ---------- */
 .btn {
