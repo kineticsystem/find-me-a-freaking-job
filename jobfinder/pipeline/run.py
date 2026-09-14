@@ -14,7 +14,7 @@ from .. import db, discovery, opencode
 from ..config import settings
 from ..models import RawJob
 from ..sources import build
-from . import deepdive, digest as digest_mod, extract, fetch, profile, triage
+from . import deepdive, digest as digest_mod, extract, fetch, profile, progress, triage
 from .criteria import criteria_hash
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
     run_id = db.start_run()
     stats: dict[str, Any] = {"run_id": run_id, "workdir": str(workdir), "skip_llm": skip_llm}
     log.info("run %d starting in %s", run_id, workdir)
+    progress.begin(run_id)
 
     try:
         discovery.seed_from_config()
@@ -77,6 +78,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         # -- profile -----------------------------------------------------
         digest = None
         if not skip_llm:
+            progress.stage("profile", "reading your CV and notes")
             digest = profile.load_digest(workdir)
             stats["profile"] = digest.headline
 
@@ -84,8 +86,10 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         stats["criteria"] = criteria
 
         # -- fetch (persistent sources + ephemeral keyword queries) ------
+        progress.stage("fetch", "fetching postings from every source")
         raw, fetch_stats = fetch.fetch_all(workdir, digest)
         stats.update(fetch_stats)
+        progress.note(fetched=len(raw), sources=fetch_stats.get("sources_run", 0))
 
         if digest and settings().discovery.enabled:
             raw += _fetch_keyword_sources(digest, workdir, stats)
@@ -95,6 +99,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
 
         # -- structure the prose sources ---------------------------------
         if not skip_llm:
+            progress.stage("extract", "structuring free-text adverts")
             structured = extract.extract(raw, workdir)
             raw = [j for j in raw if not j.needs_extraction] + structured
             stats["extracted"] = len(structured)
@@ -106,6 +111,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         stats.update(pf_stats)
 
         # -- persist ------------------------------------------------------
+        progress.stage("store", "storing new postings")
         store_stats = fetch.store(kept, settings().limits.max_jobs_per_run)
         store_stats.pop("new_ids", None)
         stats.update(store_stats)
@@ -114,6 +120,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         if not skip_llm and digest:
             stats.update(triage.run_triage(digest, criteria, workdir, run_id))
             stats.update(deepdive.run_deepdive(digest, criteria, workdir, run_id))
+            progress.stage("discover", "looking for new company boards")
             stats["websearch"] = discovery.run_websearch(digest, workdir)
 
         stats["duration_seconds"] = round(time.time() - started, 1)
@@ -133,6 +140,7 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         stats["error"] = error
         return stats
     finally:
+        progress.finish()
         _run_lock.release()
 
 

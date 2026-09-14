@@ -4,6 +4,7 @@ import { Filters } from './components/Filters'
 import { JobCard } from './components/JobCard'
 import { SettingsPanel } from './components/SettingsPanel'
 import { describe } from './interval'
+import { ScanProgress } from './components/ScanProgress'
 import type { Facets, Health, Job, JobQuery, Status } from './types'
 import { DEFAULT_QUERY } from './types'
 
@@ -69,6 +70,17 @@ export default function App() {
     effective.minScore, effective.sort, effective.includeArchived, load,
   ])
   useEffect(refreshMeta, [refreshMeta])
+  // While a scan runs, keep the progress line current and pick up new scores.
+  useEffect(() => {
+    if (!health?.running) return
+    const t = setInterval(() => {
+      api.getHealth().then((h) => {
+        setHealth(h)
+        if (!h.running) { refreshMeta(); load(effective, 0) }   // it just finished: show the results
+      }).catch(() => undefined)
+    }, 3000)
+    return () => clearInterval(t)
+  }, [health?.running, refreshMeta, load, effective]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = (p: Partial<JobQuery>) => setQuery((q) => ({ ...q, ...p }))
 
@@ -182,9 +194,9 @@ export default function App() {
 
         <div className="scan-row">
           <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health || health.running || !health.setup.ready}>▶ Scan now</button>
-          {health?.running && <span className="btn-note">a scan is running</span>}
           {health && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
         </div>
+        {health?.running && <ScanProgress p={health.progress} />}
 
         {error && <div className="empty">Could not load jobs: {error}</div>}
         {!error && !loading && jobs.length === 0 && <div className="empty">Nothing matches. Try clearing the filters.</div>}

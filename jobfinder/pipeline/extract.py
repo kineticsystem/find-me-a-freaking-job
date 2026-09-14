@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from ..config import settings
@@ -11,6 +12,7 @@ from ..opencode import OpencodeError, estimate_tokens, run_session
 from ..models import ExtractionResult
 from ..prompts import extract_prompt
 from ..textutil import clean, infer_remote, truncate
+from . import progress
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,8 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
         return []
 
     max_batches = settings().limits.max_extract_batches
+    est_batches = min(max_batches, max(1, -(-sum(estimate_tokens(truncate(j.description, PER_ENTRY_CHARS)) for j in pending) // BATCH_TOKEN_BUDGET)))
+    progress.stage("extract", f"structuring {len(pending)} free-text adverts", total=est_batches)
     out: list[RawJob] = []
     batch: list[dict[str, object]] = []
     used = 0
@@ -37,6 +41,7 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
         nonlocal batch, used
         if not batch:
             return
+        started = time.time()
         try:
             result = run_session(
                 extract_prompt(batch),
@@ -46,8 +51,10 @@ def extract(jobs: list[RawJob], workdir: Path) -> list[RawJob]:
             )
         except OpencodeError as exc:
             log.warning("extraction batch %d failed: %s", index, exc)
+            progress.unit_done(time.time() - started)
             batch, used = [], 0
             return
+        progress.unit_done(time.time() - started)
         source_id = pending[0].source_id
         for j in result.jobs:
             if not j.title:

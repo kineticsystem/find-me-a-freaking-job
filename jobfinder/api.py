@@ -63,11 +63,13 @@ def _decode_lists(job: dict[str, Any]) -> dict[str, Any]:
 @app.get("/health")
 def health() -> dict[str, Any]:
     from .pipeline import profile as prof
+    from .pipeline import progress
 
     return {
         "ok": True,
         "setup": prof.readiness(),
         "running": run_mod.is_running(),
+        "progress": progress.snapshot(),
         "next_run": scheduler.next_run(),
         "interval_minutes": settings().interval_minutes,
         "criteria": current_criteria_hash(),

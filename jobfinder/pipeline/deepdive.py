@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from ..models import DeepDive, ProfileDigest
 from ..opencode import OpencodeError, run_session
 from ..prompts import deepdive_prompt
 from ..textutil import truncate
+from . import progress
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +28,9 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
         return stats
 
     log.info("deep dive: %d candidates", len(rows))
+    progress.stage("deepdive", f"reading the {len(rows)} best matches in full", total=len(rows))
     for i, row in enumerate(rows, start=1):
+        started = time.time()
         job = {
             "company": row["company"], "title": row["title"],
             "location": row["location"] or "not stated", "url": row["url"],
@@ -42,7 +46,9 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
         except OpencodeError as exc:
             stats["failed"] += 1
             log.warning("deep dive failed for job %s: %s", row["id"], exc)
+            progress.unit_done(time.time() - started)
             continue
+        progress.unit_done(time.time() - started, f"reading the {len(rows)} best matches in full")
 
         with db.connect() as conn:
             db.record_evaluation(

@@ -66,8 +66,22 @@ export interface Facets {
   remote: Record<string, number>
 }
 
+export interface Progress {
+  active: boolean
+  run_id?: number
+  stage?: string
+  message?: string
+  current?: number
+  total?: number
+  eta_seconds?: number | null
+  elapsed_seconds?: number
+  fetched?: number
+  sources?: number
+}
+
 export interface Health {
   ok: boolean
+  progress: Progress
   setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean }
   running: boolean
   next_run: string | null

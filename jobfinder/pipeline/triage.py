@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from ..models import ProfileDigest, TriageBatch
 from ..opencode import OpencodeError, run_session
 from ..prompts import triage_prompt
 from ..textutil import truncate
+from . import progress
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +40,9 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
     if not pending:
         return stats
 
-    log.info("triage: %d jobs in %d batches", len(pending), -(-len(pending) // batch_size))
+    n_batches = -(-len(pending) // batch_size)
+    log.info("triage: %d jobs in %d batches", len(pending), n_batches)
+    progress.stage("triage", f"scoring {len(pending)} postings", total=n_batches)
 
     for index in range(0, len(pending), batch_size):
         chunk = pending[index : index + batch_size]
@@ -46,6 +50,7 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
         entries = [_row_to_entry(ref, row) for ref, row in by_ref.items()]
         batch_no = index // batch_size + 1
         stats["batches"] += 1
+        started = time.time()
 
         try:
             result = run_session(
@@ -57,7 +62,9 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
         except OpencodeError as exc:
             stats["failed_batches"] += 1
             log.warning("triage batch %d failed: %s", batch_no, exc)
+            progress.unit_done(time.time() - started)
             continue
+        progress.unit_done(time.time() - started, f"scoring {len(pending)} postings")
 
         seen: set[int] = set()
         with db.connect() as conn:

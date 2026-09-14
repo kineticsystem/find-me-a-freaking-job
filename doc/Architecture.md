@@ -145,7 +145,7 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | scheduler state, next run, opencode/model check, counts |
+| GET | `/health` | scheduler state, next run, set-up checklist, live scan progress (`pipeline/progress.py`: stage, units done of total, an ETA from the mean unit time so far), counts |
 | GET | `/jobs` | paged, ranked list; `q`, `status`, `remote`, `source`, `min_score`, `sort`, `include_archived`, `limit`, `offset`; returns `total` |
 | GET | `/jobs/facets` | filter options with counts |
 | GET | `/jobs/{id}` | one job with its full evaluation history |
