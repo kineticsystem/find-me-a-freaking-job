@@ -323,15 +323,16 @@ def update_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
         raise HTTPException(400, "nothing to change")
     log.warning("settings changed from %s: %s", request.client.host if request.client else "?",
                 body.model_dump(exclude_none=True))
-    try:
-        if body.interval_minutes is not None:
-            write_top_level_setting("interval_minutes", body.interval_minutes)
-            scheduler.set_interval(body.interval_minutes)
-        if body.run_on_start is not None:
-            write_top_level_setting("run_on_start", body.run_on_start)
-    except config_mod.ConfigError as exc:
-        # the write itself is valid; the reload found the *other* file broken
-        raise HTTPException(400, exc.message) from exc
+    # Validate the config files BEFORE touching them: a save that is going to
+    # be refused because another file is broken must not change anything.
+    errors = config_mod.check_config()
+    if errors:
+        raise HTTPException(400, errors[0].message)
+    if body.interval_minutes is not None:
+        write_top_level_setting("interval_minutes", body.interval_minutes)
+        scheduler.set_interval(body.interval_minutes)
+    if body.run_on_start is not None:
+        write_top_level_setting("run_on_start", body.run_on_start)
     return get_settings()
 
 

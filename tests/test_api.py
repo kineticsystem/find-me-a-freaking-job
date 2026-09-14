@@ -301,13 +301,11 @@ def test_add_source_from_a_careers_url(client, tmp_db, monkeypatch):
 
 
 @pytest.fixture()
-def prefs_file(tmp_path, monkeypatch):
+def prefs_file(monkeypatch):
+    """The throwaway preferences file the autouse fixture already points at."""
     import jobfinder.config as config
-    path = tmp_path / "preferences.yaml"
+    path = config.preferences_path()
     path.write_text("based_in: Netherlands\ntitles: [Engineer]\nmin_salary: {amount: 70000, currency: EUR, period: year}\n")
-    monkeypatch.setattr(config, "preferences_path", lambda: path)
-    real_load = config._load_yaml
-    monkeypatch.setattr(config, "_load_yaml", lambda p: real_load(path) if p.name == "preferences.yaml" else {})
     config.reload()
     yield path
     config.settings.cache_clear(); config.preferences.cache_clear()
@@ -404,8 +402,7 @@ def test_invalid_values_in_preferences_yaml_are_named(prefs_file):
 def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
     import jobfinder.config as config
     from jobfinder.cli import main
-    (tmp_path / "settings.yaml").write_text("interval_minutes: [oops\n")
-    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    config.settings_path().write_text("interval_minutes: [oops\n")
     config.settings.cache_clear(); config.preferences.cache_clear()
     with pytest.raises(SystemExit) as exit_:
         main(["doctor"])

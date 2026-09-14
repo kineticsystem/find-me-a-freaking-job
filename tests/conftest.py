@@ -14,6 +14,26 @@ from jobfinder import db  # noqa: E402
 from jobfinder.models import NormalizedJob, fingerprint  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _never_touch_real_files(tmp_path, monkeypatch):
+    """Every test runs against a throwaway config directory. A test once
+    PATCHed /settings against the real config/settings.yaml, and the
+    author's scan interval kept changing after every test run."""
+    import jobfinder.config as config
+
+    cfg_dir = tmp_path / "config"; cfg_dir.mkdir()
+    for name in ("settings.example.yaml", "preferences.example.yaml"):
+        (cfg_dir / name).write_text((config.CONFIG_DIR / name).read_text())
+    (cfg_dir / "settings.yaml").write_text("interval_minutes: 720\n")
+    (cfg_dir / "preferences.yaml").write_text("based_in: Testland\ntitles: [Engineer]\n")
+    monkeypatch.setattr(config, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(config, "settings_path", lambda: cfg_dir / "settings.yaml")
+    monkeypatch.setattr(config, "preferences_path", lambda: cfg_dir / "preferences.yaml")
+    config.settings.cache_clear(); config.preferences.cache_clear()
+    yield
+    config.settings.cache_clear(); config.preferences.cache_clear()
+
+
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
     path = tmp_path / "test.db"
