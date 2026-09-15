@@ -247,5 +247,4 @@ jobfinder/         the Python package
 web/               the React app
 tests/             API contract tests
 runs/              per-run audit trail and the generated opencode config (git-ignored)
-data/jobs.db       the database (git-ignored)
 ```
