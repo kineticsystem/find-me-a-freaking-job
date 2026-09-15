@@ -129,8 +129,10 @@ def cmd_check(args: argparse.Namespace) -> int:
     with the errors if there were any, so reaching here means they are fine."""
     from .config import preferences, settings
 
-    settings(); preferences()
-    print("configuration OK: config/settings.yaml and config/preferences.yaml are valid")
+    settings()
+    db.init_db()
+    preferences()   # imports a pending config/preferences.yaml into the database
+    print("configuration OK: config/settings.yaml is valid; preferences are in the database")
     return 0
 
 

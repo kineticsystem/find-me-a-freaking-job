@@ -120,6 +120,8 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 |---|---|
 | `jobs` | One row per posting, unique on `fingerprint` = normalised company + title + location, so the same job on three boards collapses to one row. `first_seen`, `last_seen`, `seen_count` track its lifetime. |
 | `evaluations` | One row per (job, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
+| `users` | One row per user. Until login exists, only the default user (id 1), created by `init_db`. |
+| `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
 | `user_state` | Your decisions: `new`, `shortlisted`, `applied`, `dismissed`, `archived`, plus notes. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
@@ -133,7 +135,7 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 
 ## The user's files
 
-Four files are the user's own and never belong in the repository: `config/settings.yaml`, `config/preferences.yaml`, `profile/notes.md` and `profile/cv.*`. The first three are created from checked-in `.example` templates by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. All four are git-ignored, as are `data/` and `runs/`. The example notes file is a single HTML comment; `notes_text()` strips comments, so an untouched file reads as empty.
+Three files are the user's own and never belong in the repository: `config/settings.yaml`, `profile/notes.md` and `profile/cv.*`. The first two are created from checked-in `.example` templates by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. All four are git-ignored, as are `data/` and `runs/`. The example notes file is a single HTML comment; `notes_text()` strips comments, so an untouched file reads as empty.
 
 `profile.readiness()` reports whether the CV, the notes and the essential preferences (based in, titles) exist. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
 
@@ -165,7 +167,7 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 | GET | `/profile` | the CV on disk, the notes, the cached digest |
 | POST | `/profile/cv` | multipart upload; saved as `profile/cv.<ext>`, previous CV removed, digest cache dropped |
 | PUT | `/profile/notes` | replaces `profile/notes.md` |
-| GET / PUT | `/preferences` | the parsed preferences plus the YAML text; PUT saves from the form, validated by the same model the pipeline reads, with `location_rules` order becoming the priority and `market_priority` derived from it |
+| GET / PUT | `/preferences` | the user's preferences document; PUT saves from the form, validated by the same model the pipeline reads, with `location_rules` order becoming the priority and `market_priority` derived from it |
 | POST | `/reset/jobs` · `/reset/all` | `{"confirm": "DELETE"}` — delete every job, score, decision and run (sources and files stay) · that plus the sources and discovery memory, reseeded from config; both refused while a scan runs |
 | POST | `/reload` | re-read YAML without a restart |
 

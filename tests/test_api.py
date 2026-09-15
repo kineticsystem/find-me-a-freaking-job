@@ -302,17 +302,16 @@ def test_add_source_from_a_careers_url(client, tmp_db, monkeypatch):
 
 
 @pytest.fixture()
-def prefs_file(monkeypatch):
-    """The throwaway preferences file the autouse fixture already points at."""
+def prefs_doc(tmp_db):
+    """A preferences document saved for the default user in the throwaway db."""
     import jobfinder.config as config
-    path = config.preferences_path()
-    path.write_text("based_in: Netherlands\ntitles: [Engineer]\nmin_salary: {amount: 70000, currency: EUR, period: year}\n")
-    config.reload()
-    yield path
-    config.settings.cache_clear(); config.preferences.cache_clear()
+    config.save_preferences(config.Preferences(based_in="Netherlands", titles=["Engineer"],
+                                               min_salary=config.Salary(amount=70000, currency="EUR", period="year")))
+    yield
+    config.preferences.cache_clear()
 
 
-def test_preferences_form_save_validates_and_orders_markets(client, prefs_file):
+def test_preferences_form_save_validates_and_orders_markets(client, prefs_doc):
     assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
     body = {
         "based_in": "Netherlands", "citizenship": ["Netherlands", "EU"], "titles": ["C++ Engineer"],
@@ -330,15 +329,17 @@ def test_preferences_form_save_validates_and_orders_markets(client, prefs_file):
     assert [x["priority"] for x in p["location_rules"]] == [1, 2]     # order wins over the sent numbers
     assert p["market_priority"] == ["US", "EU"]                        # derived, not the stale list
     assert p["min_salary"]["amount"] == 90000
-    text = prefs_file.read_text()
-    assert text.startswith("# WHO you are") and "C++ Engineer" in text and "stale" not in text
+    # stored as one document per user in the database, not in a file
+    from jobfinder import db
+    doc = db.get_preferences_doc(db.DEFAULT_USER_ID)
+    assert doc["titles"] == ["C++ Engineer"] and doc["market_priority"] == ["US", "EU"]
     # the pipeline sees the new values
     from jobfinder.config import preferences
     assert preferences().must_have == ["C++"] and preferences().fingerprint != ""
     # validation: a bad remote value is refused and nothing is written
     bad = dict(body, location_rules=[{"country": "US", "remote": "sometimes"}])
     assert client.put("/preferences", json=bad).status_code == 422
-    assert "sometimes" not in prefs_file.read_text()
+    assert db.get_preferences_doc(db.DEFAULT_USER_ID)["location_rules"][0]["remote"] == "required"
 
 
 def test_reset_jobs_keeps_sources_and_needs_the_word(client, seeded, tmp_db):
@@ -373,31 +374,38 @@ def test_reset_refused_while_a_scan_runs(client, seeded, monkeypatch):
     assert client.get("/jobs").json()["total"] == 3
 
 
-def test_broken_preferences_yaml_is_reported_and_previous_values_kept(client, prefs_file):
+def test_preferences_yaml_is_imported_once_then_renamed(tmp_db):
+    """The pre-database file becomes the default user's document on first
+    read, and is renamed so nobody edits a file that is no longer read."""
     import jobfinder.config as config
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
-    prefs_file.write_text("titles: [\nbroken")
-    r = client.post("/reload")
-    assert r.status_code == 400
-    assert "config/preferences.yaml cannot be used: not valid YAML (line" in r.json()["detail"]
-    # the last good values stay in force; nothing runs on defaults
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
-    errs = config.check_config()
-    assert [e.file for e in errs] == ["preferences.yaml"]
-    # a settings change is refused too, since the reload would find the broken file
-    assert client.patch("/settings", json={"interval_minutes": 60}).status_code == 400
-    # saving from the form repairs it
-    assert client.put("/preferences", json={"based_in": "Denmark", "titles": ["Dev"]}).status_code == 200
-    assert config.check_config() == []
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Denmark"
+    path = config.preferences_path()
+    path.write_text("based_in: Ireland\ntitles: [Dev]\nlocation_rules:\n  - {country: US, remote: required}\n")
+    config.preferences.cache_clear()
+    p = config.preferences()
+    assert p.based_in == "Ireland" and p.titles == ["Dev"]
+    assert not path.exists() and path.with_name("preferences.yaml.imported").exists()
+    from jobfinder import db
+    assert db.get_preferences_doc(db.DEFAULT_USER_ID)["based_in"] == "Ireland"
+    # a second load comes from the database, not the (now absent) file
+    config.preferences.cache_clear()
+    assert config.preferences().based_in == "Ireland"
 
 
-def test_invalid_values_in_preferences_yaml_are_named(prefs_file):
+def test_a_broken_pending_preferences_yaml_still_stops_the_start(tmp_db):
     import jobfinder.config as config
-    prefs_file.write_text("location_rules:\n  - {country: US, remote: sometimes}\n")
+    config.preferences_path().write_text("location_rules:\n  - {country: US, remote: sometimes}\n")
     [err] = config.check_config()
-    assert err.file == "preferences.yaml"
-    assert err.detail.startswith("invalid values") and "location_rules" in err.detail and "remote" in err.detail
+    assert err.file == "preferences.yaml" and "remote" in err.detail
+    config.preferences.cache_clear()
+    with pytest.raises(config.ConfigError):
+        config.preferences()
+
+
+def test_no_file_and_no_document_means_empty_preferences(tmp_db):
+    import jobfinder.config as config
+    config.preferences_path().unlink(missing_ok=True)
+    config.preferences.cache_clear()
+    assert config.preferences().titles == [] and config.check_config() == []
 
 
 def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
@@ -440,9 +448,9 @@ def test_user_files_are_created_from_examples(tmp_path, monkeypatch):
         shutil.copy(config.ROOT / rel, root / rel)
     monkeypatch.setattr(config, "ROOT", root)
     created = config.ensure_user_files()
-    assert created == ["config/settings.yaml", "config/preferences.yaml", "profile/notes.md"]
+    assert created == ["config/settings.yaml", "profile/notes.md"]   # preferences live in the database now
     assert config.ensure_user_files() == []           # idempotent
-    assert (root / "config/preferences.yaml").read_text() == (root / "config/preferences.example.yaml").read_text()
+    assert (root / "config/settings.yaml").read_text() == (root / "config/settings.example.yaml").read_text()
 
 
 def test_example_files_are_valid_and_empty_of_personal_data():
@@ -456,11 +464,12 @@ def test_example_files_are_valid_and_empty_of_personal_data():
     assert clean(_HTML_COMMENT.sub("", example_notes)) == ""  # reads as "not written yet"
 
 
-def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, prefs_file, monkeypatch):
+def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, tmp_db, monkeypatch):
     import jobfinder.config as config
     from jobfinder.pipeline import profile as prof
     from jobfinder.pipeline import run as run_mod
-    prefs_file.write_text("based_in: ''\ntitles: []\n"); config.reload()
+    config.preferences_path().unlink(missing_ok=True)
+    config.save_preferences(config.Preferences())
     (profile_dir / "notes.md").write_text("<!-- just the template comment -->\n")
     r = prof.readiness()
     assert r == {"cv": False, "notes": False, "preferences": False, "ready": False}
@@ -477,7 +486,7 @@ def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, prefs_
     assert client.get("/health").json()["setup"] == {"cv": True, "notes": True, "preferences": True, "ready": True}
 
 
-def test_only_cv_dot_ext_counts_as_the_cv(profile_dir):
+def test_only_cv_dot_ext_counts_as_the_cv(profile_dir, tmp_db):
     from jobfinder.pipeline import profile as prof
     (profile_dir / "notes.example.md").write_text("<!-- template -->")
     (profile_dir / "notes.md").write_text("my notes")

@@ -97,7 +97,7 @@ export const setSourceEnabled = (id: string, enabled: boolean) =>
 export const deleteSource = (id: string) =>
   request<{ ok: true }>(`/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-export interface PreferencesResponse { preferences: Preferences; config_path: string }
+export interface PreferencesResponse { preferences: Preferences; user_id: number }
 export const getPreferences = () => request<PreferencesResponse>('/preferences')
 export const savePreferences = (p: Preferences) =>
   request<PreferencesResponse>('/preferences', { method: 'PUT', body: JSON.stringify(p) })

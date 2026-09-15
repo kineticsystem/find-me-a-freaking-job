@@ -416,10 +416,8 @@ def reset_all(body: ResetRequest) -> dict[str, Any]:
 
 @app.get("/preferences")
 def get_preferences() -> dict[str, Any]:
-    return {
-        "preferences": preferences().model_dump(),
-        "config_path": str(config_mod.preferences_path()),
-    }
+    """The current user's preferences document (one per user, in the database)."""
+    return {"preferences": preferences().model_dump(), "user_id": config_mod.DEFAULT_USER_ID}
 
 
 @app.put("/preferences")
@@ -427,58 +425,7 @@ def put_preferences(body: Preferences) -> dict[str, Any]:
     """Save from the form. Validated by the same model the pipeline reads;
     location_rules order becomes the market priority. Re-scores everything on
     the next scan through the criteria hash."""
-    config_mod.write_preferences(body.normalised())
-    return get_preferences()
-
-
-# --------------------------------------------------------------------------
-# resets: destructive, so the client must echo the exact confirmation word
-# --------------------------------------------------------------------------
-class ResetRequest(BaseModel):
-    confirm: str = Field(..., description="must be exactly DELETE")
-
-
-def _require_confirmation(body: ResetRequest) -> None:
-    if body.confirm != "DELETE":
-        raise HTTPException(400, 'type DELETE to confirm')
-    if run_mod.is_running():
-        raise HTTPException(409, "a scan is running; wait for it to finish, then try again")
-
-
-@app.post("/reset/jobs")
-def reset_jobs(body: ResetRequest) -> dict[str, Any]:
-    """Delete every job, score, decision and run. Sources and your profile stay."""
-    _require_confirmation(body)
-    deleted = db.delete_all_jobs()
-    log.warning("all jobs deleted from the UI: %s", deleted)
-    return {"ok": True, "deleted": deleted}
-
-
-@app.post("/reset/all")
-def reset_all(body: ResetRequest) -> dict[str, Any]:
-    """Delete everything in the database, sources included. Files (CV, notes,
-    preferences) are untouched; the seed sources come back from config."""
-    _require_confirmation(body)
-    deleted = db.reset_everything()
-    discovery.seed_from_config()
-    log.warning("database reset from the UI: %s", deleted)
-    return {"ok": True, "deleted": deleted, "sources_reseeded": len(db.list_sources())}
-
-
-@app.get("/preferences")
-def get_preferences() -> dict[str, Any]:
-    return {
-        "preferences": preferences().model_dump(),
-        "config_path": str(config_mod.preferences_path()),
-    }
-
-
-@app.put("/preferences")
-def put_preferences(body: Preferences) -> dict[str, Any]:
-    """Save from the form. Validated by the same model the pipeline reads;
-    location_rules order becomes the market priority. Re-scores everything on
-    the next scan through the criteria hash."""
-    config_mod.write_preferences(body.normalised())
+    config_mod.save_preferences(body.normalised())
     return get_preferences()
 
 

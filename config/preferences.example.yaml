@@ -1,7 +1,11 @@
 # WHO you are and WHAT you want. Everything here is fed to the model on every
-# judgement. This file is created from preferences.example.yaml on first start
-# and is yours: it is git-ignored. Edit it in the web app (settings -> Your
-# preferences) rather than by hand -- the form always writes a valid file.
+# judgement.
+#
+# Preferences live in the database, one document per user, and are edited in
+# the web app (settings -> Your preferences). This file documents the shape.
+# It is also the one-time import path: a config/preferences.yaml present on
+# start is imported as the default user's preferences and renamed to
+# preferences.yaml.imported, after which the file is no longer read.
 #
 # Free text about what you want lives in profile/notes.md, not here.
 

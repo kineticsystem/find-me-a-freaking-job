@@ -49,7 +49,7 @@ The model itself is downloaded on the first start, into `~/.cache/huggingface` o
 
 Everything the model knows about you comes from three things, all set from the web app. Until all three are done the app shows a checklist at the top of the page and does not scan at all — no postings are fetched until it knows who it is working for.
 
-Your own files — `config/settings.yaml`, `config/preferences.yaml`, `profile/notes.md` and your CV — are created on first start from the `.example` templates and are git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches them.
+Your own files — `config/settings.yaml`, `profile/notes.md` and your CV — are created on first start from the `.example` templates and are git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches them. Your preferences are kept in the database (one set per user), edited in the web app.
 
 ### Your CV
 
@@ -61,7 +61,7 @@ Your own files — `config/settings.yaml`, `config/preferences.yaml`, `profile/n
 
 ### Your preferences
 
-⚙ → *Your preferences*. Structured facts and hard limits, validated as you save:
+⚙ → *Your preferences*. Structured facts and hard limits, validated as you save and stored in the database. (Upgrading from a version that kept them in `config/preferences.yaml`: the file is imported on the first start and renamed to `.imported`.)
 
 | Field | What it does |
 |---|---|

@@ -93,6 +93,26 @@ CREATE TABLE IF NOT EXISTS sources (
     fail_count    INTEGER NOT NULL DEFAULT 0
 );
 
+-- Users. Until login exists there is exactly one, the default user (id 1),
+-- created by init_db. Everything per-user hangs off this id from now on.
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- One preferences document per user: the whole Preferences model as JSON,
+-- validated on write and on read. A document rather than tables because
+-- nothing ever queries inside it; it is loaded whole, handed to the model,
+-- and hashed for the criteria. schema_version lets a later change to the
+-- model migrate stored documents lazily on read.
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    data           TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    updated_at     TEXT NOT NULL
+);
+
 -- Cache so the same search result URL is not re-inspected every two hours.
 CREATE TABLE IF NOT EXISTS discovery_log (
     key        TEXT PRIMARY KEY,
@@ -131,6 +151,9 @@ MIGRATIONS = [
 ]
 
 
+DEFAULT_USER_ID = 1
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
@@ -138,6 +161,34 @@ def init_db() -> None:
             have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
             if column not in have:
                 conn.execute(ddl)
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, name, created_at) VALUES (?, 'default', ?)",
+            (DEFAULT_USER_ID, utcnow()),
+        )
+
+
+# --------------------------------------------------------------------------
+# per-user documents
+# --------------------------------------------------------------------------
+PREFERENCES_SCHEMA_VERSION = 1
+
+
+def get_preferences_doc(user_id: int) -> dict[str, Any] | None:
+    """The stored document, or None if the user has never saved one."""
+    with connect() as conn:
+        row = conn.execute("SELECT data, schema_version FROM user_preferences WHERE user_id = ?", (user_id,)).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def save_preferences_doc(user_id: int, data: dict[str, Any]) -> None:
+    with connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO users (id, name, created_at) VALUES (?, ?, ?)", (user_id, f"user{user_id}", utcnow()))
+        conn.execute(
+            """INSERT INTO user_preferences (user_id, data, schema_version, updated_at) VALUES (?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET data = excluded.data,
+                 schema_version = excluded.schema_version, updated_at = excluded.updated_at""",
+            (user_id, json.dumps(data, ensure_ascii=False), PREFERENCES_SCHEMA_VERSION, utcnow()),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -637,6 +688,7 @@ def reset_everything() -> dict[str, int]:
         counts["sources"] = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         conn.execute("DELETE FROM sources")
         conn.execute("DELETE FROM discovery_log")
+        # users and their preferences are not job data; they stay
     with connect() as conn:
         conn.execute("VACUUM")
     return counts
