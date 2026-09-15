@@ -6,7 +6,7 @@ interface Props {
   notify: (text: string, error?: boolean) => void
 }
 
-const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'default', discovered: 'discovered', user: 'added by hand', keyword: 'keyword search from your CV' }
+const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'default', discovered: 'discovered', user: 'added by hand', keyword: 'keyword from your CV' }
 
 const company = (s: Source) => (typeof s.config.company === 'string' && s.config.company) || (typeof s.config.slug === 'string' && s.config.slug) || s.id
 
@@ -85,6 +85,11 @@ export function SourcesSection({ notify }: Props) {
 
       {sources === null ? <div className="settings-hint">Loading…</div> : (
         <>
+          {sources.some((s) => s.origin === 'keyword') && (
+            <div className="settings-hint">
+              <strong>Keyword searches</strong> — on each scan the app also queries Jobicy, a job board that can be searched, with terms taken from your CV and your must-haves, filtered to your region where Jobicy has one (Europe, USA, UK, Canada…); <em>no region filter</em> means it returns remote roles from everywhere. Switch off any that bring noise; they are rebuilt when your CV changes.
+            </div>
+          )}
           <div className="settings-hint">You follow {on} of {sources.length} sources</div>
           <ul className="source-list">
             {shown.map((s) => (

@@ -883,7 +883,7 @@ def upsert_source(cfg: dict[str, Any], origin: str = "config", followers: Iterab
             # for whether it is on: that is decided in the UI, and a re-sync on
             # every run must not switch a source back on. `enabled` in the YAML
             # therefore only applies when the row is first created.
-            if origin == "config":
+            if origin in ("config", "keyword"):     # keyword rows are regenerated each scan
                 conn.execute(
                     "UPDATE sources SET type=?, config=? WHERE id=?",
                     (cfg["type"], json.dumps(cfg), cfg["id"]),
@@ -1010,6 +1010,23 @@ def delete_source(source_id: str) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM sources WHERE id = ? AND origin != 'config'", (source_id,))
         return cur.rowcount > 0
+
+
+def prune_keyword_sources(user_id: int, keep: Iterable[str]) -> int:
+    """Drop this user's keyword searches that the current CV no longer
+    produces (a changed keyword or region). Rows another user also has are
+    only unfollowed."""
+    keep = set(keep)
+    with connect() as conn:
+        rows = [r["source_id"] for r in conn.execute(
+            """SELECT us.source_id FROM user_sources us JOIN sources s ON s.id = us.source_id
+               WHERE us.user_id = ? AND s.origin = 'keyword'""", (user_id,))]
+        stale = [sid for sid in rows if sid not in keep]
+        for sid in stale:
+            conn.execute("DELETE FROM user_sources WHERE user_id = ? AND source_id = ?", (user_id, sid))
+            if not conn.execute("SELECT 1 FROM user_sources WHERE source_id = ?", (sid,)).fetchone():
+                conn.execute("DELETE FROM sources WHERE id = ?", (sid,))
+        return len(stale)
 
 
 def unfollow_source(user_id: int, source_id: str) -> str | None:

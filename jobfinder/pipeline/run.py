@@ -173,7 +173,9 @@ def _fetch_keyword_sources(cand: profile.Candidate, workdir: Path, stats: dict[s
     """Channel B: per-run keyword queries, per user. Failures are non-fatal."""
     out: list[RawJob] = []
     found: dict[str, Any] = {}
-    for cfg in discovery.keyword_sources(cand):
+    current = discovery.keyword_sources(cand)
+    db.prune_keyword_sources(cand.user_id, [c["id"] for c in current])
+    for cfg in current:
         db.upsert_source(cfg, origin="keyword", followers=[cand.user_id])
         if not db.follows(cand.user_id, cfg["id"]):
             continue                                   # switched off in their list

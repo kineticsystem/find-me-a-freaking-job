@@ -208,11 +208,39 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
 # --------------------------------------------------------------------------
 # B. keyword queries against filterable aggregators
 # --------------------------------------------------------------------------
+# Jobicy's region filter. Anything not here is queried without one
+# (Jobicy's "anywhere"), which returns remote roles from everywhere.
 JOBICY_GEOS = {
-    "poland": "europe", "germany": "europe", "france": "europe", "spain": "europe",
-    "eu": "europe", "europe": "europe", "us": "usa", "usa": "usa",
-    "united states": "usa", "uk": "uk", "canada": "canada",
+    "europe": "europe", "eu": "europe", "european union": "europe", "emea": "europe",
+    "poland": "europe", "germany": "europe", "france": "europe", "spain": "europe", "italy": "europe",
+    "ireland": "europe", "netherlands": "europe", "portugal": "europe", "austria": "europe",
+    "belgium": "europe", "sweden": "europe", "denmark": "europe", "finland": "europe", "norway": "europe",
+    "switzerland": "europe", "czech republic": "europe", "czechia": "europe", "romania": "europe",
+    "greece": "europe", "hungary": "europe",
+    "us": "usa", "usa": "usa", "united states": "usa", "united states of america": "usa", "north america": "usa",
+    "uk": "uk", "united kingdom": "uk", "great britain": "uk", "england": "uk",
+    "canada": "canada", "australia": "australia", "asia": "asia", "latam": "latam", "latin america": "latam",
 }
+NO_REGION = "anywhere"                  # Jobicy's word for no region filter
+
+
+def jobicy_geo(rule: Any) -> str | None:
+    """The Jobicy region for a location rule, trying country then region,
+    whole and by word ("EU / EEA" -> europe)."""
+    for raw in (rule.country, rule.region):
+        if not raw:
+            continue
+        key = str(raw).strip().lower()
+        if key in JOBICY_GEOS:
+            return JOBICY_GEOS[key]
+        for word in re.split(r"[\s/,()]+", key):
+            if word in JOBICY_GEOS:
+                return JOBICY_GEOS[word]
+    return None
+
+
+def geo_label(geo: str) -> str:
+    return "no region filter" if geo == NO_REGION else geo
 
 
 def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
@@ -224,18 +252,18 @@ def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
     assert digest is not None
     terms: list[str] = []
     for term in (digest.core_skills + digest.search_keywords + prefs.must_have):
-        t = re.sub(r"[^a-z0-9+#.-]", "", str(term).lower())
+        # "Head of Product" -> head-of-product, as Jobicy spells its tags.
+        t = re.sub(r"-+", "-", re.sub(r"[^a-z0-9+#.-]", "-", str(term).strip().lower())).strip("-")
         # Jobicy rejects very short tags with a 400.
         if 2 < len(t) <= 20 and t not in terms:
             terms.append(t)
 
     geos: list[str] = []
     for rule in prefs.location_rules:
-        key = (rule.country or rule.region or "").lower()
-        geo = JOBICY_GEOS.get(key)
+        geo = jobicy_geo(rule)
         if geo and geo not in geos:
             geos.append(geo)
-    geos = geos or ["anywhere"]
+    geos = geos or [NO_REGION]
 
     out: list[dict[str, Any]] = []
     for term in terms[:limit]:
@@ -247,7 +275,9 @@ def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
             "geo": geo,
             "count": 50,
             "enabled": True,
-            "company": f"search: {term} · {geo}",
+            "company": f'Jobicy search: "{term}" · {geo_label(geo)}',
+            "keyword": term,
+            "region": geo_label(geo),
         })
     return out
 
