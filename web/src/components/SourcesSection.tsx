@@ -87,7 +87,7 @@ export function SourcesSection({ notify }: Props) {
         <>
           {sources.some((s) => s.origin === 'keyword') && (
             <div className="settings-hint">
-              <strong>Keyword searches</strong> — on each scan the app also queries Jobicy, a job board that can be searched, with terms taken from your CV and your must-haves, filtered to your region where Jobicy has one (Europe, USA, UK, Canada…); <em>no region filter</em> means it returns remote roles from everywhere. Switch off any that bring noise; they are rebuilt when your CV changes.
+              <strong>Keyword searches</strong> — on each scan the app also queries Jobicy, a job board that can be searched, with terms taken from your CV and your must-haves, filtered to your region where Jobicy has one (Europe, USA, UK, Canada…); <em>anywhere</em> means no region filter, remote roles from everywhere. Switch off any that bring noise; they are rebuilt when your CV changes.
             </div>
           )}
           <div className="settings-hint">You follow {on} of {sources.length} sources</div>

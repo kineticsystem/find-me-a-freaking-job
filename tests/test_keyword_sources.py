@@ -18,14 +18,14 @@ def test_terms_become_hyphenated_tags_and_regions_match_loosely():
     out = discovery.keyword_sources(c)
     assert [s["keyword"] for s in out][:4] == ["python", "head-of-product", "cto", "c++"]
     assert {s["region"] for s in out} == {"europe", "usa"}
-    assert out[0]["company"] == 'Jobicy search: "python" · europe' and out[0]["id"] == "kw-python-europe"
+    assert out[0]["company"] == '"python" · europe' and out[0]["id"] == "kw-python-europe"
 
 
 def test_unknown_region_means_no_filter_and_says_so():
     c = _cand([LocationRule(country="Atlantis")])
     out = discovery.keyword_sources(c)
-    assert out[0]["geo"] == "anywhere" and out[0]["region"] == "no region filter"
-    assert out[0]["company"].endswith("· no region filter")
+    assert out[0]["geo"] == "anywhere" and out[0]["region"] == "anywhere"
+    assert out[0]["company"] == '"python" · anywhere'.replace("python", out[0]["keyword"])
 
 
 def test_stale_keyword_rows_are_pruned_when_the_cv_changes(tmp_db):

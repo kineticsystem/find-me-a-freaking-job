@@ -240,7 +240,7 @@ def jobicy_geo(rule: Any) -> str | None:
 
 
 def geo_label(geo: str) -> str:
-    return "no region filter" if geo == NO_REGION else geo
+    return geo
 
 
 def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
@@ -275,7 +275,7 @@ def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
             "geo": geo,
             "count": 50,
             "enabled": True,
-            "company": f'Jobicy search: "{term}" · {geo_label(geo)}',
+            "company": f'"{term}" · {geo_label(geo)}',
             "keyword": term,
             "region": geo_label(geo),
         })
