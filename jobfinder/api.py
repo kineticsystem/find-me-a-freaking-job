@@ -234,9 +234,9 @@ def list_sources(user: CurrentUser) -> dict[str, Any]:
     out = []
     for src in db.list_sources(user["id"]):
         cfg = json.loads(src["config"])
-        if src["origin"] == "keyword" and "region" not in cfg:      # a row from before the label existed
-            cfg = {**cfg, "keyword": cfg.get("tag"), "region": discovery.geo_label(cfg.get("geo", "")),
-                   "company": f'"{cfg.get("tag")}" · {discovery.geo_label(cfg.get("geo", ""))}'}
+        if src["origin"] == "keyword":      # labelled from the query itself, never from what a past version stored
+            cfg = {**cfg, "keyword": cfg.get("tag"), "region": cfg.get("geo", ""),
+                   "company": f'"{cfg.get("tag")}" · {cfg.get("geo", "")}'}
         out.append({**src, "config": cfg, "jobs_stored": counts.get(src["id"], 0),
                     "deletable": src["origin"] != "config"})
     return {"sources": out}
