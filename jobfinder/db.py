@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+-- idx_users_email (unique) is created in init_db, after the migrations that add the column.
 
 -- Bearer tokens. Only the SHA-256 of the token is stored; the token itself is
 -- shown once at login and never kept, so a stolen database yields no usable
