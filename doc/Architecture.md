@@ -231,8 +231,9 @@ Both suites have caught real bugs: NULL list fields crashing the card renderer, 
 ## Layout
 
 ```
-config/            settings.yaml, preferences.yaml, sources.yaml
-profile/           your CV and notes (git-ignored); .cache/profile.json
+config/            settings.yaml (yours, git-ignored) and its example; sources.yaml (seed list)
+profile/           import path for a pre-login cv.* / notes.md only; nothing is written here
+data/              jobs.db — postings, scores, decisions, accounts, CVs, notes, preferences (git-ignored)
 jobfinder/         the Python package
   sources/         one adapter per source type
   pipeline/        one module per stage; run.py orchestrates
