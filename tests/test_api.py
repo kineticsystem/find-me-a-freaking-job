@@ -335,7 +335,7 @@ def test_preferences_form_save_validates_and_orders_markets(client, prefs_doc):
 
 def test_reset_jobs_keeps_sources_and_needs_the_word(client, seeded, tmp_db):
     from jobfinder import db
-    db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="discovered")
+    db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="discovered", followers=[1])
     client.patch(f"/jobs/{seeded['a']}/state", json={"status": "shortlisted"})
     assert client.post("/reset/jobs", json={"confirm": "delete"}).status_code == 400   # wrong word
     assert client.get("/jobs").json()["total"] == 3                                    # nothing happened

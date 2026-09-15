@@ -97,11 +97,10 @@ export function SourcesSection({ notify }: Props) {
                 </label>
                 <span className="source-meta">
                   {s.jobs_stored} stored
-                  {s.other_followers > 0 ? ` · ${s.other_followers} other${s.other_followers === 1 ? '' : 's'} follow` : ''}
                   {s.last_error ? <span className="error"> · failing: {s.last_error.slice(0, 60)}</span> : ''}
                   {s.fail_count >= 5 ? <span className="error"> · paused after {s.fail_count} failures</span> : ''}
                 </span>
-                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source for everyone; its jobs stay">Remove</button>}
+                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source; its jobs stay">Remove</button>}
               </li>
             ))}
           </ul>

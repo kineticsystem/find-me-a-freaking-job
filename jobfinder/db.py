@@ -952,17 +952,25 @@ def active_sources() -> list[dict[str, Any]]:
 
 
 def list_sources(user_id: int | None = None) -> list[dict[str, Any]]:
-    """The registry; with a user, whether they follow each row and how many
-    others do."""
+    """The whole registry, or one user's list: exactly the rows they have a
+    follow row for (on or off). What others added or had discovered is not
+    theirs to see; the registry row is shared underneath so a board two
+    people add is still fetched once."""
     with connect() as conn:
         if user_id is None:
             return [dict(r) for r in conn.execute("SELECT * FROM sources ORDER BY id")]
         rows = conn.execute(
-            """SELECT s.*, COALESCE(me.enabled, 0) AS following,
-                      (SELECT COUNT(*) FROM user_sources o WHERE o.source_id = s.id AND o.enabled = 1 AND o.user_id != ?) AS other_followers
-               FROM sources s LEFT JOIN user_sources me ON me.source_id = s.id AND me.user_id = ?
-               ORDER BY s.id""", (user_id, user_id)).fetchall()
+            """SELECT s.*, me.enabled AS following
+               FROM sources s JOIN user_sources me ON me.source_id = s.id AND me.user_id = ?
+               ORDER BY s.id""", (user_id,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def in_list(user_id: int, source_id: str) -> bool:
+    """Whether the source is in this user's list at all (on or off)."""
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM user_sources WHERE user_id = ? AND source_id = ?",
+                            (user_id, source_id)).fetchone() is not None
 
 
 def record_source_result(source_id: str, found: int, error: str = "") -> None:

@@ -225,17 +225,17 @@ def latest_digest() -> str:
 
 @user_api.get("/sources")
 def list_sources(user: CurrentUser) -> dict[str, Any]:
-    """The shared registry as this user sees it: `following` is their own
-    switch, `other_followers` how many others have it on. `jobs_stored` is
-    what is in the database right now from it; `jobs_found` the running
-    total fetched. A row can be deleted only by whoever is its only
-    follower, and never a seed-list row."""
+    """This user's list: the seed sources, what they added, what was
+    discovered through their boards, their own CV searches. `following` is
+    their switch. `jobs_stored` is what is in the database right now from
+    it; `jobs_found` the running total fetched. Seed rows cannot be removed;
+    the rest can, and the server refuses if somebody else also follows it."""
     counts = db.source_job_counts()
     out = []
     for src in db.list_sources(user["id"]):
         cfg = json.loads(src["config"])
         out.append({**src, "config": cfg, "jobs_stored": counts.get(src["id"], 0),
-                    "deletable": src["origin"] != "config" and src["other_followers"] == 0})
+                    "deletable": src["origin"] != "config"})
     return {"sources": out}
 
 
@@ -324,8 +324,8 @@ def toggle_source(source_id: str, user: CurrentUser, enabled: bool = True) -> di
     """Your own switch: on means fetched for you and its postings shown to
     you; off hides them (except what you already decided on) and, if nobody
     else follows it, stops it being fetched at all."""
-    if not db.follow_source(user["id"], source_id, enabled):
-        raise HTTPException(404, "no such source")
+    if not db.in_list(user["id"], source_id) or not db.follow_source(user["id"], source_id, enabled):
+        raise HTTPException(404, "no such source in your list")
     return {"ok": True, "source_id": source_id, "enabled": enabled}
 
 
@@ -334,8 +334,8 @@ def remove_source(source_id: str, user: CurrentUser) -> dict[str, Any]:
     """Remove a registry row: only if nobody else follows it, and never a
     seed-list row (switch those off instead). Its jobs stay."""
     src = db.get_source(source_id)
-    if not src:
-        raise HTTPException(404, "no such source")
+    if not src or not db.in_list(user["id"], source_id):
+        raise HTTPException(404, "no such source in your list")
     if src["origin"] == "config":
         raise HTTPException(400, "this source comes from config/sources.yaml; switch it off instead of deleting it")
     others = [u for u in db.source_followers(source_id) if u != user["id"]]

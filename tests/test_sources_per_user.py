@@ -31,8 +31,8 @@ def test_a_source_added_by_one_user_is_theirs_alone_and_shared_on_second_add(two
     assert db.source_followers("gh-acme") == [two]
     mine = {s["id"]: s for s in db.list_sources(two)}
     theirs = {s["id"]: s for s in db.list_sources(1)}
-    assert mine["gh-acme"]["following"] == 1 and mine["gh-acme"]["other_followers"] == 0
-    assert theirs["gh-acme"]["following"] == 0 and theirs["gh-acme"]["other_followers"] == 1
+    assert mine["gh-acme"]["following"] == 1
+    assert "gh-acme" not in theirs                            # not in user 1's list at all
     assert db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="user", followers=[1]) is False
     assert db.source_followers("gh-acme") == [two]           # a re-add does not follow; follow_source does
     db.follow_source(1, "gh-acme")
@@ -108,11 +108,19 @@ def test_api_sources_are_per_user(anon_client, two):
     db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="user", followers=[two])
     rows = {s["id"]: s for s in anon_client.get("/sources", headers=a).json()["sources"]}
     assert rows["seed-board"]["following"] == 1 and rows["seed-board"]["deletable"] is False
-    assert rows["gh-acme"]["following"] == 0 and rows["gh-acme"]["deletable"] is False    # somebody else's
-    assert anon_client.delete("/sources/gh-acme", headers=a).status_code == 409
+    assert "gh-acme" not in rows                                                       # somebody else's: invisible
+    assert anon_client.delete("/sources/gh-acme", headers=a).status_code == 404
+    assert anon_client.post("/sources/gh-acme/enabled", headers=a).status_code == 404   # cannot follow what you cannot see
+    assert db.source_followers("gh-acme") == [two]
     assert anon_client.delete("/sources/seed-board", headers=b).status_code == 400
     assert anon_client.post("/sources/seed-board/enabled", params={"enabled": "false"}, headers=a).status_code == 200
     assert db.source_followers("seed-board") == [two]
+    # pasting the same URL attaches to the existing row; now both follow, so neither may delete it
+    db.follow_source(1, "gh-acme")
+    assert anon_client.delete("/sources/gh-acme", headers=b).status_code == 409
+    db.follow_source(1, "gh-acme", False)
+    with db.connect() as conn:
+        conn.execute("DELETE FROM user_sources WHERE user_id = 1 AND source_id = 'gh-acme'")
     assert {s["id"]: s for s in anon_client.get("/sources", headers=b).json()["sources"]}["gh-acme"]["deletable"] is True
     assert anon_client.delete("/sources/gh-acme", headers=b).status_code == 200
     assert db.get_source("gh-acme") is None
