@@ -102,7 +102,7 @@ As shipped it runs Qwen 3.8 27B, which fits a 24 GB card.
 ./docker/dock.sh jobfinder shell -c 'jobfinder.sh doctor'
 ```
 
-`start` brings the model server and the app up in the background; the model takes a few seconds to load. On the very first start your config files are created from the examples. `doctor` confirms the database exists, opencode answers, the model is reachable and your CV was read. Fix anything it flags before continuing.
+`start` brings the model server and the app up in the background; the model takes a few seconds to load. On the very first start `config/settings.yaml` is created from its example. `doctor` confirms the database exists, opencode answers, the model is reachable and your CV was read. Fix anything it flags before continuing.
 
 ## 4. First run
 

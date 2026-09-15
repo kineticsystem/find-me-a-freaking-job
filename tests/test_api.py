@@ -441,7 +441,7 @@ def test_user_files_are_created_from_examples(tmp_path, monkeypatch):
     import shutil
     import jobfinder.config as config
     root = tmp_path / "repo"
-    for rel in ("config/settings.example.yaml", "config/preferences.example.yaml"):
+    for rel in ("config/settings.example.yaml",):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(config.ROOT / rel, root / rel)
     monkeypatch.setattr(config, "ROOT", root)
@@ -451,15 +451,9 @@ def test_user_files_are_created_from_examples(tmp_path, monkeypatch):
     assert (root / "config/settings.yaml").read_text() == (root / "config/settings.example.yaml").read_text()
 
 
-def test_example_files_are_valid_and_empty_of_personal_data():
+def test_example_settings_are_valid():
     import jobfinder.config as config
-    prefs = config.Preferences.model_validate(__import__("yaml").safe_load((config.ROOT / "config/preferences.example.yaml").read_text()))
-    assert prefs.based_in == "" and prefs.titles == [] and prefs.citizenship == [] and prefs.min_salary is None
     config.Settings.model_validate(__import__("yaml").safe_load((config.ROOT / "config/settings.example.yaml").read_text()))
-    from jobfinder.pipeline.profile import _HTML_COMMENT
-    from jobfinder.textutil import clean
-    example_notes = (config.ROOT / "profile/notes.example.md").read_text()
-    assert clean(_HTML_COMMENT.sub("", example_notes)) == ""  # reads as "not written yet"
 
 
 def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, tmp_db, monkeypatch):
@@ -495,7 +489,6 @@ def test_legacy_profile_folder_is_imported_once_for_the_first_user(profile_dir, 
     import json
     from jobfinder import db
     from jobfinder.pipeline import profile as prof
-    (profile_dir / "notes.example.md").write_text("<!-- template -->")
     (profile_dir / "README.md").write_text("# docs")
     (profile_dir / "random.txt").write_text("not a cv")
     assert prof.import_legacy_files() == [] and prof.readiness(1)["cv"] is False   # only cv.<ext> counts

@@ -114,7 +114,7 @@ case "$command" in
         tname="${name}-test"
         tdir=$(mktemp -d /tmp/jobfinder-test.XXXXXX)
         mkdir -p "$tdir/config" "$tdir/profile" "$tdir/data" "$tdir/runs"
-        cp ../config/settings.example.yaml ../config/preferences.example.yaml ../config/sources.yaml "$tdir/config/"
+        cp ../config/settings.example.yaml ../config/sources.yaml "$tdir/config/"
         cp ../config/settings.example.yaml "$tdir/config/settings.yaml"
         sed -i 's/^run_on_start: .*/run_on_start: false/' "$tdir/config/settings.yaml"
         cat > "$tdir/config/preferences.yaml" <<'YAML'
@@ -125,7 +125,6 @@ must_have: [Python]
 location_rules:
   - {country: Testland, remote: any}
 YAML
-        cp ../profile/notes.example.md "$tdir/profile/"
         printf '# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.\n' > "$tdir/profile/cv.md"
         printf 'I want remote backend work at a product company. No agencies.\n' > "$tdir/profile/notes.md"
         docker rm -f "$tname" >/dev/null 2>&1 || true

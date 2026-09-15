@@ -141,9 +141,9 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 
 ## The user's files
 
-Three files are the user's own and never belong in the repository: `config/settings.yaml`, `profile/notes.md` and `profile/cv.*`. The first two are created from checked-in `.example` templates by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. All four are git-ignored, as are `data/` and `runs/`. The example notes file is a single HTML comment; `notes_text()` strips comments, so an untouched file reads as empty.
+One file is the installation's own and never belongs in the repository: `config/settings.yaml`, created from the checked-in `settings.example.yaml` by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. It is git-ignored, as are `data/`, `runs/` and anything under `profile/` and `config/` that is not an example or the seed list. Everything personal — CV, notes, preferences — is in the database. Two importers remain for installs from before that: `config.import_preferences_file()` (a `config/preferences.yaml`) and `profile.import_legacy_files()` (`profile/cv.*`, `profile/notes.md`, the cached digest), each run once on start and renaming what it took to `.imported`. HTML comments in notes are stripped, so a note that is only a template comment reads as empty.
 
-`profile.readiness()` reports whether the CV, the notes and the essential preferences (based in, titles) exist. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
+`Candidate.readiness` reports whether the CV, the notes and the essential preferences (based in, titles) exist for a user. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
 
 ## Configuration failures
 

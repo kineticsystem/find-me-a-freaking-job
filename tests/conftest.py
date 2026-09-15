@@ -22,8 +22,7 @@ def _never_touch_real_files(tmp_path, monkeypatch):
     import jobfinder.config as config
 
     cfg_dir = tmp_path / "config"; cfg_dir.mkdir()
-    for name in ("settings.example.yaml", "preferences.example.yaml"):
-        (cfg_dir / name).write_text((config.CONFIG_DIR / name).read_text())
+    (cfg_dir / "settings.example.yaml").write_text((config.CONFIG_DIR / "settings.example.yaml").read_text())
     (cfg_dir / "settings.yaml").write_text("interval_minutes: 720\n")
     (cfg_dir / "preferences.yaml").write_text("based_in: Testland\ntitles: [Engineer]\n")
     monkeypatch.setattr(config, "CONFIG_DIR", cfg_dir)
