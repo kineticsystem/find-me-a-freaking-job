@@ -10,4 +10,5 @@ config/preferences.yaml
 config/preferences.yaml.imported
 profile/cv.*
 profile/notes.md
+profile/notes.md.imported
 profile/.cache/

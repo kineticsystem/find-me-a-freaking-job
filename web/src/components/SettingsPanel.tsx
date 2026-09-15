@@ -102,8 +102,8 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify, self,
         </button>
       </div>
 
-      <ProfileSection notify={notify} onChanged={onChanged} />
       </>}
+      <ProfileSection notify={notify} onChanged={onChanged} />
       <PreferencesSection notify={notify} onChanged={onChanged} />
       {admin && <SourcesSection notify={notify} />}
       {admin && <UsersSection self={self} notify={notify} />}

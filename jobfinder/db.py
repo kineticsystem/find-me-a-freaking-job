@@ -28,6 +28,22 @@ CREATE TABLE IF NOT EXISTS users (
 );
 -- idx_users_email (unique) is created in init_db, after the migrations that add the column.
 
+-- Who each user is: the CV (the uploaded file and the text pulled out of
+-- it), their notes, and the model's digest of both. One row per user; in
+-- the database rather than files so a backup of jobs.db is everything.
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_id           INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    cv_name           TEXT,
+    cv_data           BLOB,
+    cv_text           TEXT NOT NULL DEFAULT '',
+    cv_updated_at     TEXT,
+    notes             TEXT NOT NULL DEFAULT '',
+    notes_updated_at  TEXT,
+    digest            TEXT,                     -- ProfileDigest JSON
+    digest_hash       TEXT,                     -- source hash it was made from; stale when it differs
+    digest_updated_at TEXT
+);
+
 -- Bearer tokens. Only the SHA-256 of the token is stored; the token itself is
 -- shown once at login and never kept, so a stolen database yields no usable
 -- token. One row per device or script; deleting a row logs that one out.
@@ -248,6 +264,56 @@ def init_db() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         # The pre-login default user owns all existing data; it becomes the admin.
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (DEFAULT_USER_ID,))
+
+
+# --------------------------------------------------------------------------
+# user profile: CV, notes, digest
+# --------------------------------------------------------------------------
+def get_profile(user_id: int) -> dict[str, Any]:
+    """Everything but the CV bytes. Always returns a dict (empty fields when nothing is stored)."""
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT cv_name, length(cv_data) AS cv_bytes, cv_text, cv_updated_at, notes, notes_updated_at,
+                      digest, digest_hash, digest_updated_at FROM user_profile WHERE user_id = ?""", (user_id,)
+        ).fetchone()
+    return dict(row) if row else {"cv_name": None, "cv_bytes": None, "cv_text": "", "cv_updated_at": None,
+                                  "notes": "", "notes_updated_at": None, "digest": None, "digest_hash": None,
+                                  "digest_updated_at": None}
+
+
+def get_cv_blob(user_id: int) -> tuple[str, bytes] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT cv_name, cv_data FROM user_profile WHERE user_id = ?", (user_id,)).fetchone()
+    return (row["cv_name"], bytes(row["cv_data"])) if row and row["cv_data"] else None
+
+
+def _ensure_profile_row(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute("INSERT OR IGNORE INTO user_profile (user_id) VALUES (?)", (user_id,))
+
+
+def save_cv(user_id: int, name: str, data: bytes, text: str) -> None:
+    with connect() as conn:
+        _ensure_profile_row(conn, user_id)
+        conn.execute("UPDATE user_profile SET cv_name = ?, cv_data = ?, cv_text = ?, cv_updated_at = ? WHERE user_id = ?",
+                     (name, data, text, utcnow(), user_id))
+
+
+def save_notes(user_id: int, text: str) -> None:
+    with connect() as conn:
+        _ensure_profile_row(conn, user_id)
+        conn.execute("UPDATE user_profile SET notes = ?, notes_updated_at = ? WHERE user_id = ?", (text, utcnow(), user_id))
+
+
+def save_digest(user_id: int, source_hash: str, digest_json: str) -> None:
+    with connect() as conn:
+        _ensure_profile_row(conn, user_id)
+        conn.execute("UPDATE user_profile SET digest = ?, digest_hash = ?, digest_updated_at = ? WHERE user_id = ?",
+                     (digest_json, source_hash, utcnow(), user_id))
+
+
+def all_preferences_docs() -> list[tuple[int, str]]:
+    with connect() as conn:
+        return [(int(r["user_id"]), r["data"]) for r in conn.execute("SELECT user_id, data FROM user_preferences")]
 
 
 # --------------------------------------------------------------------------
@@ -506,7 +572,7 @@ def list_jobs(
     """
     from .pipeline.criteria import current_criteria_hash
 
-    ch = criteria_hash or current_criteria_hash()
+    ch = criteria_hash or current_criteria_hash(user_id)
     sql = f"""
         -- A deep dive supersedes the triage score it was derived from; the
         -- triage score stands in until one exists. Scores belong to the
@@ -577,7 +643,7 @@ def list_jobs(
 def get_job(job_id: int, criteria_hash: str | None = None, user_id: int = DEFAULT_USER_ID) -> dict[str, Any] | None:
     from .pipeline.criteria import current_criteria_hash
 
-    ch = criteria_hash or current_criteria_hash()
+    ch = criteria_hash or current_criteria_hash(user_id)
     with connect() as conn:
         row = conn.execute(
             """SELECT j.*, COALESCE(u.status,'new') AS status, u.notes, u.reason
@@ -875,7 +941,7 @@ def reset_everything() -> dict[str, int]:
         counts["sources"] = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         conn.execute("DELETE FROM sources")
         conn.execute("DELETE FROM discovery_log")
-        # users and their preferences are not job data; they stay
+        # users, their profiles (CV, notes) and preferences are not job data; they stay
     with connect() as conn:
         conn.execute("VACUUM")
     return counts

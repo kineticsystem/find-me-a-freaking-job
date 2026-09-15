@@ -91,7 +91,15 @@ def store(jobs: list[RawJob], limit: int) -> dict[str, Any]:
 
 
 def prefilter_jobs(
-    jobs: list[RawJob], digest: ProfileDigest | None
+    jobs: list[RawJob], digests: list[ProfileDigest]
 ) -> tuple[list[RawJob], dict[str, Any]]:
-    kept, dropped = prefilter.apply(jobs, digest)
-    return kept, {"prefilter_kept": len(kept), "prefilter_dropped": len(dropped)}
+    """Keeps a posting that passes the gate for any user's vocabulary."""
+    if not digests:
+        kept, dropped = prefilter.apply(jobs, None)
+        return kept, {"prefilter_kept": len(kept), "prefilter_dropped": len(dropped)}
+    keep_ids: set[int] = set()
+    for digest in digests:
+        kept, _ = prefilter.apply(jobs, digest)
+        keep_ids.update(id(j) for j in kept)
+    kept = [j for j in jobs if id(j) in keep_ids]
+    return kept, {"prefilter_kept": len(kept), "prefilter_dropped": len(jobs) - len(kept)}

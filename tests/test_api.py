@@ -1,4 +1,5 @@
 import pytest
+from conftest import make_candidate
 """Contract the web UI relies on."""
 
 
@@ -147,12 +148,9 @@ def test_reason_is_cleared_when_the_job_is_restored(client, seeded):
 
 
 def test_rejection_reasons_reach_the_prompts(client, seeded, monkeypatch):
-    from jobfinder.models import ProfileDigest
     from jobfinder.prompts import deepdive_prompt, triage_prompt
 
-    digest = ProfileDigest(headline="Senior C++ engineer", core_skills=["C++"],
-                           summary="Twenty years of C++ on desktop and robotics software.",
-                           search_keywords=["c++", "qt", "ros2"])
+    digest = make_candidate()
     entry = [{"ref": 1, "company": "X", "title": "Y", "location": "Z", "remote_type": "remote",
               "salary": "", "excerpt": "..."}]
     assert "REJECTED" not in triage_prompt(digest, entry)
@@ -224,24 +222,26 @@ def test_settings_change_persists_and_reschedules(client, tmp_path, monkeypatch)
 
 @pytest.fixture()
 def profile_dir(tmp_path, monkeypatch):
+    """An empty legacy profile/ folder, so nothing on disk is imported."""
     from jobfinder.pipeline import profile as prof
-    d = tmp_path / "profile"; (d / ".cache").mkdir(parents=True)
+    d = tmp_path / "profile"; d.mkdir()
     monkeypatch.setattr(prof, "profile_dir", lambda: d)
     return d
 
 
 def test_cv_upload_replaces_previous_and_invalidates_digest(client, profile_dir):
-    (profile_dir / "cv.pdf").write_bytes(b"%PDF-old")
-    (profile_dir / ".cache" / "profile.json").write_text("{}")
+    from jobfinder import db
+    db.save_cv(1, "cv.pdf", b"%PDF-old", "old text")
+    db.save_digest(1, "stale-hash", "{}")
     r = client.post("/profile/cv", files={"file": ("My Resume.md", b"# Jane Doe\nSenior engineer, C++ and Python.", "text/markdown")})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["saved"] == "cv.md" and body["cv"]["name"] == "cv.md"
     assert body["cv_files"] == ["cv.md"]                 # the old cv.pdf is gone
-    assert not (profile_dir / "cv.pdf").exists()
-    assert not (profile_dir / ".cache" / "profile.json").exists()  # digest will be rebuilt
-    assert body["cv_chars"] > 0 and body["digest_current"] is False
-    assert (profile_dir / "cv.md").read_text().startswith("# Jane Doe")
+    assert body["cv_chars"] > 0 and body["digest_current"] is False   # digest will be rebuilt
+    assert db.get_cv_blob(1) == ("cv.md", b"# Jane Doe\nSenior engineer, C++ and Python.")
+    dl = client.get("/profile/cv")
+    assert dl.status_code == 200 and dl.content.startswith(b"# Jane Doe") and 'filename="cv.md"' in dl.headers["content-disposition"]
 
 
 def test_cv_upload_rejects_bad_files(client, profile_dir):
@@ -249,13 +249,13 @@ def test_cv_upload_rejects_bad_files(client, profile_dir):
     assert client.post("/profile/cv", files={"file": ("cv.pdf", b"not a pdf", "application/pdf")}).status_code == 400
     assert client.post("/profile/cv", files={"file": ("cv.txt", b"", "text/plain")}).status_code == 400
     assert client.get("/profile").json()["cv"] is None    # nothing was written
+    assert client.get("/profile/cv").status_code == 404
 
 
 def test_notes_round_trip(client, profile_dir):
     r = client.put("/profile/notes", json={"text": "I want remote C++ work.\n\nNo agencies."})
     assert r.status_code == 200
-    assert (profile_dir / "notes.md").read_text() == "I want remote C++ work.\n\nNo agencies.\n"
-    assert client.get("/profile").json()["notes"] == "I want remote C++ work.\n\nNo agencies."
+    assert client.get("/profile").json()["notes"] == "I want remote C++ work.\n\nNo agencies.\n"
 
 
 def test_source_toggle_survives_a_config_resync(tmp_db):
@@ -423,14 +423,12 @@ def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
 
 
 def test_notes_go_into_every_judgement_verbatim(client, profile_dir, monkeypatch):
-    from jobfinder.models import ProfileDigest
+    from jobfinder.pipeline import profile as prof
     from jobfinder.prompts import deepdive_prompt, triage_prompt
-    digest = ProfileDigest(headline="Senior C++ engineer", core_skills=["C++"],
-                           summary="Twenty years of C++ on desktop and robotics software.",
-                           search_keywords=["c++", "qt", "ros2"])
     entry = [{"ref": 1, "company": "X", "title": "Y", "location": "Z", "remote_type": "remote", "salary": "", "excerpt": "..."}]
-    assert "OWN NOTES" not in triage_prompt(digest, entry)           # no notes file yet
+    assert "OWN NOTES" not in triage_prompt(make_candidate(), entry)           # no notes yet
     client.put("/profile/notes", json={"text": "I know ROS2 well but I am **not a roboticist**."})
+    digest = make_candidate(notes=prof.notes_text(1))                    # what the pipeline loads
     t = triage_prompt(digest, entry)
     assert "THE CANDIDATE'S OWN NOTES" in t and "**not a roboticist**" in t
     assert "**not a roboticist**" in deepdive_prompt(digest, {"company": "X", "title": "Y", "location": "Z", "url": ""}, "...")
@@ -443,12 +441,12 @@ def test_user_files_are_created_from_examples(tmp_path, monkeypatch):
     import shutil
     import jobfinder.config as config
     root = tmp_path / "repo"
-    for rel in ("config/settings.example.yaml", "config/preferences.example.yaml", "profile/notes.example.md"):
+    for rel in ("config/settings.example.yaml", "config/preferences.example.yaml"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(config.ROOT / rel, root / rel)
     monkeypatch.setattr(config, "ROOT", root)
     created = config.ensure_user_files()
-    assert created == ["config/settings.yaml", "profile/notes.md"]   # preferences live in the database now
+    assert created == ["config/settings.yaml"]   # preferences, notes and the CV live in the database
     assert config.ensure_user_files() == []           # idempotent
     assert (root / "config/settings.yaml").read_text() == (root / "config/settings.example.yaml").read_text()
 
@@ -470,31 +468,51 @@ def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, tmp_db
     from jobfinder.pipeline import run as run_mod
     config.preferences_path().unlink(missing_ok=True)
     config.save_preferences(config.Preferences())
-    (profile_dir / "notes.md").write_text("<!-- just the template comment -->\n")
-    r = prof.readiness()
+    client.put("/profile/notes", json={"text": "<!-- just the template comment -->\n"})
+    r = prof.readiness(1)
     assert r == {"cv": False, "notes": False, "preferences": False, "ready": False}
     assert client.get("/health").json()["setup"]["ready"] is False
+    assert client.get("/health", headers={}).json()["setup"]["ready"] is False
     # no scan at all: not from the API, not from the scheduler (run_once)
     resp = client.post("/runs")
     assert resp.status_code == 409 and "missing: cv, notes, preferences" in resp.json()["detail"]
     monkeypatch.setattr(run_mod.db, "start_run", lambda: (_ for _ in ()).throw(AssertionError("a run was started")))
     assert run_mod.run_once() == {"skipped": "not set up", "not_ready": ["cv", "notes", "preferences"]}
-    (profile_dir / "cv.md").write_text("# Jane Doe\nEngineer.")
+    client.post("/profile/cv", files={"file": ("cv.md", b"# Jane Doe\nEngineer.", "text/markdown")})
     client.put("/profile/notes", json={"text": "I want remote work."})
     client.put("/preferences", json={"based_in": "Denmark", "titles": ["Engineer"]})
-    assert prof.readiness()["ready"] is True
+    assert prof.readiness(1)["ready"] is True
     assert client.get("/health").json()["setup"] == {"cv": True, "notes": True, "preferences": True, "ready": True}
+    assert [c.user_id for c in prof.candidates()] == [1]
 
 
-def test_only_cv_dot_ext_counts_as_the_cv(profile_dir, tmp_db):
+def test_health_without_a_token_has_no_per_user_parts(anon_client):
+    h = anon_client.get("/health").json()
+    assert h["ok"] is True and h["setup"] is None and h["stats"] is None and h["stale_scores"] is None
+
+
+def test_legacy_profile_folder_is_imported_once_for_the_first_user(profile_dir, tmp_db):
+    import json
+    from jobfinder import db
     from jobfinder.pipeline import profile as prof
     (profile_dir / "notes.example.md").write_text("<!-- template -->")
-    (profile_dir / "notes.md").write_text("my notes")
     (profile_dir / "README.md").write_text("# docs")
     (profile_dir / "random.txt").write_text("not a cv")
-    assert prof.cv_files() == [] and prof.readiness()["cv"] is False
-    (profile_dir / "cv.md").write_text("# Jane Doe")
-    assert [f.name for f in prof.cv_files()] == ["cv.md"] and prof.readiness()["cv"] is True
+    assert prof.import_legacy_files() == [] and prof.readiness(1)["cv"] is False   # only cv.<ext> counts
+    (profile_dir / "cv.md").write_text("# Jane Doe\nEngineer.")
+    (profile_dir / "notes.md").write_text("<!-- template -->\nI want remote work.\n")
+    (profile_dir / ".cache").mkdir()
+    from jobfinder.config import preferences
+    src_hash = prof.Candidate(1, "x", preferences(1), prof.extract_cv_text("cv.md", b"# Jane Doe\nEngineer."), "I want remote work.").source_hash
+    (profile_dir / ".cache" / "profile.json").write_text(json.dumps({"source_hash": src_hash, "digest": {
+        "headline": "Engineer", "core_skills": ["a"], "summary": "s" * 40, "search_keywords": ["a", "b", "c"]}}))
+    assert prof.import_legacy_files() == ["cv.md", "notes.md", ".cache/profile.json"]
+    cand = prof.load(1)
+    assert cand.readiness["cv"] and cand.readiness["notes"] and cand.digest is not None and cand.digest.headline == "Engineer"
+    assert db.get_cv_blob(1) == ("cv.md", b"# Jane Doe\nEngineer.")
+    assert sorted(p.name for p in profile_dir.iterdir() if p.name.endswith(".imported")) == ["cv.md.imported", "notes.md.imported"]
+    assert (profile_dir / ".cache" / "profile.json.imported").exists()
+    assert prof.import_legacy_files() == []                                  # once
 
 
 def test_add_source_finds_the_board_behind_a_careers_page(client, tmp_db, monkeypatch):
@@ -576,7 +594,7 @@ def test_scores_from_before_a_preferences_change_show_as_stale(client, seeded, c
     from jobfinder.pipeline import criteria as crit
     before = client.get("/jobs").json()["jobs"]
     assert before[0]["score"] == 92 and before[0]["score_stale"] == 0
-    monkeypatch.setattr(crit, "current_criteria_hash", lambda: "new-criteria")   # preferences changed
+    monkeypatch.setattr(crit, "current_criteria_hash", lambda user_id=1: "new-criteria")   # preferences changed
     after = client.get("/jobs", params={"sort": "score"}).json()["jobs"]
     assert [(j["score"], j["score_stale"]) for j in after] == [(92, 1), (55, 1), (None, 0)]   # same order, now stale
     assert after[0]["summary"] == "Great C++ role"                                        # the old deep dive still shows

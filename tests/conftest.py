@@ -44,10 +44,10 @@ def tmp_db(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def criteria(monkeypatch):
-    """Pin the criteria hash so tests don't depend on the real CV on disk."""
+    """Pin the criteria hash so tests don't depend on a stored CV."""
     from jobfinder.pipeline import criteria as crit
 
-    monkeypatch.setattr(crit, "current_criteria_hash", lambda: "test-criteria")
+    monkeypatch.setattr(crit, "current_criteria_hash", lambda user_id=1: "test-criteria")
     return "test-criteria"
 
 
@@ -109,3 +109,15 @@ def client(anon_client):
     r = anon_client.post("/auth/login", json={"email": "admin@example.com", "password": "admin-pass-1"})
     anon_client.headers["Authorization"] = f"Bearer {r.json()['token']}"
     return anon_client
+
+
+def make_candidate(user_id: int = 1, notes: str = "", cv: str = "# Jane Doe\nEngineer.", **digest_kw):
+    """A Candidate with a digest, no model call."""
+    from jobfinder.config import preferences
+    from jobfinder.models import ProfileDigest
+    from jobfinder.pipeline.profile import Candidate
+
+    digest = ProfileDigest(**{"headline": "Senior C++ engineer", "core_skills": ["C++"],
+                              "summary": "Twenty years of C++ on desktop and robotics software.",
+                              "search_keywords": ["c++", "qt", "ros2"], **digest_kw})
+    return Candidate(user_id=user_id, name=f"user {user_id}", prefs=preferences(user_id), cv_text=cv, notes=notes, digest=digest)

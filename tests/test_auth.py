@@ -80,6 +80,13 @@ def test_decisions_and_preferences_follow_the_token(client, accounts, seeded):
     assert client.get(f"/jobs/{seeded['a']}", headers=other).json()["status"] == "new"
     assert [e["score"] for e in client.get(f"/jobs/{seeded['a']}", headers=admin).json()["evaluations"]] == [92, 85]
     assert client.get(f"/jobs/{seeded['a']}", headers=other).json()["evaluations"] == []
+    # CV and notes are theirs too
+    client.put("/profile/notes", json={"text": "Gardens, not servers."}, headers=other)
+    client.post("/profile/cv", files={"file": ("cv.md", b"# Sam\nHead gardener.", "text/markdown")}, headers=other)
+    assert client.get("/profile", headers=other).json()["notes"] == "Gardens, not servers.\n"
+    assert client.get("/profile", headers=admin).json()["notes"] == ""
+    assert client.get("/profile/cv", headers=other).content == b"# Sam\nHead gardener."
+    assert client.get("/profile/cv", headers=admin).status_code == 404
     client.put("/preferences", json={"based_in": "Elsewhere", "titles": ["Gardener"]}, headers=other)
     assert client.get("/preferences", headers=other).json()["preferences"]["titles"] == ["Gardener"]
     assert client.get("/preferences", headers=admin).json()["preferences"]["titles"] != ["Gardener"]
@@ -88,9 +95,10 @@ def test_decisions_and_preferences_follow_the_token(client, accounts, seeded):
 def test_admin_routes_are_admin_only(client, accounts):
     admin = _login(client, "admin@example.com", "admin-pass-1")
     other = _login(client, "other@example.com", "other-pass-1")
-    for path in ("/settings", "/sources", "/profile", "/users"):
+    for path in ("/settings", "/sources", "/users", "/runs"):
         assert client.get(path, headers=other).status_code == 403, path
         assert client.get(path, headers=admin).status_code == 200, path
+    assert client.get("/profile", headers=other).status_code == 200      # their own CV and notes
     assert client.post("/users", json={"email": "x@example.com", "password": "12345678"}, headers=other).status_code == 403
 
 

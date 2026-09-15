@@ -8,6 +8,7 @@ import logging
 import sys
 
 from . import db, discovery, opencode
+from .pipeline import profile
 from .config import ROOT, settings
 
 
@@ -35,7 +36,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     added = discovery.seed_from_config()
     print(f"database ready at {db.db_path()}")
     print(f"{added} source(s) registered from config/sources.yaml")
-    print(f"drop your CV (cv.pdf / cv.md) in {settings().paths.resolve('profile')}")
+    print("next: open the web app, create your account and upload your CV under Settings")
     return 0
 
 
@@ -43,6 +44,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .pipeline.run import run_once
 
     db.init_db()
+    profile.import_legacy_files()
     stats = run_once(skip_llm=args.no_llm)
     print(json.dumps(stats, indent=2, default=str))
     return 1 if stats.get("error") else 0
@@ -100,10 +102,14 @@ def cmd_sources(args: argparse.Namespace) -> int:
 def cmd_profile(args: argparse.Namespace) -> int:
     from pathlib import Path
 
-    from .pipeline.profile import load_digest
-
+    db.init_db()
+    profile.import_legacy_files()
+    cand = profile.load(args.user)
+    print(f"# {cand.name}: {cand.readiness}")
+    if not cand.ready:
+        return 1
     workdir = Path(settings().paths.resolve("runs")) / "profile-cli"
-    digest = load_digest(workdir, force=args.force)
+    digest = profile.load_digest(cand, workdir, force=args.force)
     print(digest.model_dump_json(indent=2))
     return 0
 
@@ -173,7 +179,6 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
     import random
 
     from .models import NormalizedJob, fingerprint
-    from .pipeline.criteria import current_criteria_hash
 
     db.init_db()
     with db.connect() as conn:
@@ -185,7 +190,12 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
     titles = ["Senior Software Engineer", "Backend Engineer", "Platform Engineer", "C++ Developer", "Python Developer",
               "Staff Engineer, Infrastructure", "Full Stack Engineer", "Site Reliability Engineer", "Embedded Software Engineer"]
     locations = [("Remote, Europe", "remote"), ("Berlin, Germany", "hybrid"), ("Dublin, Ireland", "onsite"), ("Remote, US", "remote"), ("Amsterdam", "hybrid")]
-    criteria = current_criteria_hash()
+    # The admin gets a CV and notes so the seeded scores are under their real criteria.
+    from .config import DEFAULT_USER_ID
+    db.save_cv(DEFAULT_USER_ID, "cv.md", b"# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.\n",
+               "--- cv.md ---\n# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.")
+    db.save_notes(DEFAULT_USER_ID, "I want remote backend work at a product company. No agencies.\n")
+    criteria = profile.load(DEFAULT_USER_ID).criteria
     n = 0
     with db.connect() as conn:
         for i in range(40):
@@ -214,7 +224,6 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
     db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
     # Accounts for the browser suite: the admin owns the seeded scores.
     from . import auth
-    from .config import DEFAULT_USER_ID
     if not db.any_user_can_login():
         db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("demo-admin-password"), is_admin=True)
         db.create_user("user@example.com", auth.hash_password("demo-user-password"))
@@ -223,15 +232,17 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from .pipeline.profile import cv_text, profile_dir
-
     print(f"root:      {ROOT}")
     print(f"database:  {db.db_path()} ({'exists' if db.db_path().exists() else 'missing'})")
     print(f"opencode:  {opencode.health_check()}")
-    cv = cv_text()
-    print(f"cv:        {len(cv)} chars from {profile_dir()}"
-          + ("" if cv else "  <-- EMPTY, add a CV"))
     try:
+        db.init_db()
+        profile.import_legacy_files()
+        for u in db.list_users():
+            c = profile.load(u["id"])
+            r = c.readiness
+            print(f"user {u['id']:<3} {c.name:<30} cv {len(c.cv_text):>6} chars · notes {len(c.notes):>5} chars · "
+                  f"preferences {'ok' if r['preferences'] else 'MISSING'} · {'ready' if r['ready'] else 'NOT READY'}")
         print(f"stats:     {db.stats()}")
     except Exception as exc:
         print(f"stats:     unavailable ({exc}); run `init` first")
@@ -268,7 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("sources", help="show every registered source").set_defaults(func=cmd_sources)
 
-    prof = sub.add_parser("profile", help="show (or rebuild) the CV digest")
+    prof = sub.add_parser("profile", help="show (or rebuild) a user's CV digest")
+    prof.add_argument("--user", type=int, default=1, help="user id (default 1)")
     prof.add_argument("--force", action="store_true", help="rebuild even if cached")
     prof.set_defaults(func=cmd_profile)
 

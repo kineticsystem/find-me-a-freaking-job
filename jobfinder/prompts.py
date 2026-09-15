@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any, Sequence
 
+from typing import TYPE_CHECKING
+
 from . import db
-from .config import preferences, settings
+from .config import Preferences, settings
 from .models import ProfileDigest
+
+if TYPE_CHECKING:
+    from .pipeline.profile import Candidate
 
 _RULES = (
     "Write your answer ONLY to the file `result.json` in the current directory, "
@@ -16,10 +21,9 @@ _RULES = (
 )
 
 
-def _market_block() -> str:
+def _market_block(prefs: Preferences) -> str:
     """Geographic preference is an ordering, not a filter: a lower-priority
     market is still acceptable, it just loses a tie."""
-    prefs = preferences()
     order = prefs.market_priority or [
         r.country or r.region or "" for r in
         sorted(prefs.location_rules, key=lambda r: r.priority)
@@ -40,11 +44,11 @@ def _market_block() -> str:
     )
 
 
-def _rejections_block() -> str:
+def _rejections_block(user_id: int) -> str:
     """What the candidate has turned down, and why. Guidance, not rules: the
     aim is that the same kind of posting stops scoring well, not that any
     posting sharing a word with a rejected one is thrown out."""
-    rejected = db.recent_rejections(settings().limits.rejections_in_prompt)
+    rejected = db.recent_rejections(settings().limits.rejections_in_prompt, user_id=user_id)
     if not rejected:
         return ""
     lines = "\n".join(
@@ -63,14 +67,13 @@ def _rejections_block() -> str:
     )
 
 
-def _notes_block() -> str:
+def _notes_block(notes_text: str) -> str:
     """The candidate's own words, verbatim. The digest above is a summary of
     the CV; this is not summarised, so nuance ("knows X but is not a Y")
     reaches every judgement intact."""
-    from .pipeline.profile import notes_text
     from .textutil import truncate
 
-    notes = truncate(notes_text(), settings().limits.notes_chars)
+    notes = truncate(notes_text, settings().limits.notes_chars)
     if not notes.strip():
         return ""
     return (
@@ -79,15 +82,16 @@ def _notes_block() -> str:
     )
 
 
-def _context_block(digest: ProfileDigest) -> str:
+def _context_block(cand: Candidate) -> str:
+    assert cand.digest is not None, "context needs the digest"
     return (
         "## CANDIDATE PROFILE (distilled from their CV)\n"
-        f"{digest.as_prompt_block()}\n\n"
-        f"{_notes_block()}"
+        f"{cand.digest.as_prompt_block()}\n\n"
+        f"{_notes_block(cand.notes)}"
         "## SEARCH PREFERENCES (hard requirements and dealbreakers)\n"
-        f"{preferences().as_prompt_block()}\n\n"
-        f"{_market_block()}\n"
-        f"{_rejections_block()}"
+        f"{cand.prefs.as_prompt_block()}\n\n"
+        f"{_market_block(cand.prefs)}\n"
+        f"{_rejections_block(cand.user_id)}"
     )
 
 
@@ -120,7 +124,7 @@ not include contact details or any personal data beyond professional facts.
 
 
 # ----------------------------------------------------------------- triage ---
-def triage_prompt(digest: ProfileDigest, jobs: Sequence[dict[str, Any]]) -> str:
+def triage_prompt(cand: Candidate, jobs: Sequence[dict[str, Any]]) -> str:
     listing = "\n\n".join(
         f"### ref {j['ref']}\n"
         f"company: {j['company']}\ntitle: {j['title']}\n"
@@ -137,7 +141,7 @@ def triage_prompt(digest: ProfileDigest, jobs: Sequence[dict[str, Any]]) -> str:
              "reason": "str, at most 25 words"}
         ]
     }
-    return f"""{_context_block(digest)}
+    return f"""{_context_block(cand)}
 Score each posting below for this candidate. This is a fast first pass: be
 decisive and harsh. Reject anything that violates a dealbreaker or that the
 candidate plainly cannot take from their location.
@@ -155,7 +159,7 @@ Return exactly {len(jobs)} results, one per ref, no duplicates.
 
 
 # --------------------------------------------------------------- deepdive ---
-def deepdive_prompt(digest: ProfileDigest, job: dict[str, Any], posting: str) -> str:
+def deepdive_prompt(cand: Candidate, job: dict[str, Any], posting: str) -> str:
     schema = {
         "score": "int 0-100",
         "verdict": "'strong' | 'maybe' | 'reject'",
@@ -167,11 +171,11 @@ def deepdive_prompt(digest: ProfileDigest, job: dict[str, Any], posting: str) ->
         "concerns": ["str, at most 4 concrete red flags"],
         "rationale": "str, at most 60 words, why this score",
     }
-    return f"""{_context_block(digest)}
+    return f"""{_context_block(cand)}
 Analyse ONE posting in depth.
 
 Pay particular attention to eligibility: the candidate lives in
-{preferences().based_in or "their stated country"} and cannot relocate. A role
+{cand.prefs.based_in or "their stated country"} and cannot relocate. A role
 that requires local work authorisation elsewhere, or on-site presence, is not
 eligible no matter how good the fit — set eligible=false and cap the score at 20.
 
@@ -229,7 +233,13 @@ Rules:
 
 
 def explore_prompt(url: str, hint: str) -> str:
-    prefs = preferences()
+    """Runs at fetch time, which is shared: the titles and countries of every
+    user, so a page is read once for everyone."""
+    from .config import all_preferences
+
+    everyone = all_preferences()
+    titles = sorted({t for p in everyone for t in p.titles})
+    based = sorted({p.based_in for p in everyone if p.based_in})
     return f"""Find current job postings on this page and structure them.
 
 ## PAGE
@@ -237,8 +247,8 @@ def explore_prompt(url: str, hint: str) -> str:
 
 ## WHAT TO LOOK FOR
 {hint or "Software engineering roles."}
-Titles of interest: {", ".join(prefs.titles) or "software engineering"}
-The candidate is based in {prefs.based_in or "Europe"} and needs remote-friendly roles.
+Titles of interest: {", ".join(titles) or "software engineering"}
+The candidates are based in {", ".join(based) or "Europe"} and need remote-friendly roles.
 
 Fetch the page, and follow at most one level of links into individual postings
 if the listing page lacks detail. Do not crawl further. Return every relevant
@@ -252,11 +262,11 @@ posting you actually saw.
 
 
 # -------------------------------------------------------------- discovery ---
-def queries_prompt(digest: ProfileDigest, n: int, already_tried: Sequence[str]) -> str:
-    prefs = preferences()
+def queries_prompt(cand: Candidate, n: int, already_tried: Sequence[str]) -> str:
+    prefs = cand.prefs
     schema = {"queries": [f"str, {n} web search queries"]}
     tried = "\n".join(f"- {q}" for q in already_tried[-40:]) or "(none yet)"
-    return f"""{_context_block(digest)}
+    return f"""{_context_block(cand)}
 Generate {n} DIVERSE web search queries that will surface job postings this
 candidate should see. These go to a normal web search engine.
 

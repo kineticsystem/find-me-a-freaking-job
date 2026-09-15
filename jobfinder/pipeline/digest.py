@@ -21,26 +21,37 @@ def _fmt_list(raw: str | None) -> str:
     return ", ".join(str(i) for i in items) if isinstance(items, list) else str(items)
 
 
-def write_digest(workdir: Path, run_id: int, criteria: str, stats: dict[str, Any]) -> Path:
+def write_digest(workdir: Path, run_id: int, cands: list[Any], stats: dict[str, Any]) -> Path:
     cfg = settings()
-    jobs, _ = db.list_jobs(min_score=cfg.limits.digest_min_score, limit=50, criteria_hash=criteria)
-
     lines = [
         f"# Job run #{run_id}",
         "",
         f"_{utcnow()}_",
         "",
-        f"**{len(jobs)}** postings at or above score {cfg.limits.digest_min_score}.",
-        "",
         "```",
-        json.dumps(stats, indent=2)[:2000],
+        json.dumps(stats, indent=2, default=str)[:2000],
         "```",
         "",
     ]
+    for cand in cands:
+        jobs, _ = db.list_jobs(min_score=cfg.limits.digest_min_score, limit=50, criteria_hash=cand.criteria, user_id=cand.user_id)
+        if len(cands) > 1:
+            lines += [f"# {cand.name}", ""]
+        lines += [f"**{len(jobs)}** postings at or above score {cfg.limits.digest_min_score}.", ""]
+        if not jobs:
+            lines += ["Nothing cleared the bar this run.", ""]
+        lines += _job_lines(jobs)
 
-    if not jobs:
-        lines += ["Nothing cleared the bar this run.", ""]
+    path = workdir / "digest.md"
+    path.write_text("\n".join(lines))
 
+    latest = settings().paths.resolve("runs") / "latest-digest.md"
+    latest.write_text("\n".join(lines))
+    return path
+
+
+def _job_lines(jobs: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
     for job in jobs:
         score = job.get("score")
         head = f"## {score if score is not None else '--'} · {job['title']} — {job['company']}"
@@ -62,10 +73,4 @@ def write_digest(workdir: Path, run_id: int, criteria: str, stats: dict[str, Any
         if job.get("rationale"):
             lines += [f"*Why:* {job['rationale']}", ""]
         lines += [f"[Apply]({job.get('apply_url') or job.get('url')}) · source: `{job['source_id']}` · id `{job['id']}`", "", "---", ""]
-
-    path = workdir / "digest.md"
-    path.write_text("\n".join(lines))
-
-    latest = settings().paths.resolve("runs") / "latest-digest.md"
-    latest.write_text("\n".join(lines))
-    return path
+    return lines

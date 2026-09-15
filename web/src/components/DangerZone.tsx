@@ -17,7 +17,7 @@ const COPY: Record<Action, { button: string; title: string; body: string }> = {
   all: {
     button: 'Reset everything',
     title: 'Reset the whole database?',
-    body: 'Everything above, plus every source — the ones discovered automatically and the ones you added — and what discovery has learned. Sources go back to the seed list. Your CV, notes and preferences are files, not database rows, and are not touched.',
+    body: 'Everything above, plus every source — the ones discovered automatically and the ones you added — and what discovery has learned. Sources go back to the seed list. Accounts, CVs, notes and preferences are kept.',
   },
 }
 

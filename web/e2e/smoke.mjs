@@ -323,10 +323,12 @@ await run('login', { width: 1000, height: 800 }, async (page) => {
 // a plain user: their own decisions, no admin controls
 await run('non-admin', { width: 1000, height: 800 }, async (page) => {
   check(!(await page.locator('.btn-scan').count()), 'user: no Scan button')
-  check(!(await page.locator('.banner.setup').count()), 'user: no setup checklist')
+  await page.waitForSelector('.banner.setup', { timeout: 10000 }).catch(() => {})
+  check((await page.locator('.banner.setup').count()) === 1, 'user: their own setup checklist (no CV yet)')
   await page.click('button[aria-label="Settings"]')
   await page.waitForSelector('.prefs')
   check(!(await page.locator('.sources').count()) && !(await page.locator('.users').count()) && !(await page.locator('.danger').count()), 'user: no Sources, Users or Danger zone')
+  check((await page.locator('.profile:not(.sources):not(.users):not(.danger):not(.account) .settings-section').first().textContent()) === 'Your profile', 'user: has their own Profile section')
   check((await page.locator('.account').textContent()).includes(USER.email), 'user: Account shows their email')
   await page.click('button[aria-label="Settings"]')
   const card = freshCard(page)

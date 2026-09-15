@@ -24,14 +24,17 @@ import logging
 import re
 import urllib.parse as urlparse
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from . import db
-from .config import preferences, settings
-from .models import ProfileDigest, RawJob, SearchQueries
+from .config import settings
+from .models import RawJob, SearchQueries
 from .opencode import OpencodeError, run_session
 from .prompts import queries_prompt
 from .sources.base import fetch_url
+
+if TYPE_CHECKING:
+    from .pipeline.profile import Candidate
 
 log = logging.getLogger(__name__)
 
@@ -205,9 +208,11 @@ JOBICY_GEOS = {
 }
 
 
-def keyword_sources(digest: ProfileDigest, limit: int = 6) -> list[dict[str, Any]]:
-    """Ephemeral per-run query sources built from the CV's own vocabulary."""
-    prefs = preferences()
+def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
+    """Ephemeral per-run query sources built from one user's CV vocabulary:
+    keyed sources are fetched per user (plan, Decision 4)."""
+    prefs, digest = cand.prefs, cand.digest
+    assert digest is not None
     terms: list[str] = []
     for term in (digest.core_skills + digest.search_keywords + prefs.must_have):
         t = re.sub(r"[^a-z0-9+#.-]", "", str(term).lower())
@@ -288,9 +293,9 @@ def _previous_queries() -> list[str]:
     return [r["detail"] for r in rows]
 
 
-def _fallback_queries() -> list[str]:
+def _fallback_queries(cand: Candidate) -> list[str]:
     out = []
-    for title in (preferences().titles[:3] or ["Software Engineer"]):
+    for title in (cand.prefs.titles[:3] or ["Software Engineer"]):
         out += [
             f'site:boards.greenhouse.io "{title}" remote',
             f'site:jobs.lever.co "{title}" remote',
@@ -299,31 +304,31 @@ def _fallback_queries() -> list[str]:
     return out
 
 
-def generate_queries(digest: ProfileDigest, workdir: Path, n: int) -> list[str]:
+def generate_queries(cand: Candidate, workdir: Path, n: int) -> list[str]:
     tried = _previous_queries()
     queries: list[str] = []
     try:
         result = run_session(
-            queries_prompt(digest, n, tried), workdir / "queries", SearchQueries,
+            queries_prompt(cand, n, tried), workdir / f"queries-{cand.user_id}", SearchQueries,
             title="discovery queries",
         )
         queries = [q.strip() for q in result.queries if q and q.strip()]
     except OpencodeError as exc:
         log.warning("query generation failed (%s); falling back", exc)
 
-    queries = queries or _fallback_queries()
+    queries = queries or _fallback_queries(cand)
     fresh = [q for q in queries if q not in set(tried)]
     return (fresh or queries)[:n]
 
 
-def run_websearch(digest: ProfileDigest, workdir: Path) -> dict[str, Any]:
+def run_websearch(cand: Candidate, workdir: Path) -> dict[str, Any]:
     cfg = settings().discovery
     stats: dict[str, Any] = {"queries": 0, "results": 0, "new_sources": []}
     if not cfg.enabled:
         return stats
     budget = [cfg.max_new_boards_per_run]
 
-    for query in generate_queries(digest, workdir, cfg.queries_per_run):
+    for query in generate_queries(cand, workdir, cfg.queries_per_run):
         if budget[0] <= 0:
             break
         db.mark_discovery(f"query:{query}", "query", query)

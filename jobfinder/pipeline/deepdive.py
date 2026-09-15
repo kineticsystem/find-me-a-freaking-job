@@ -9,7 +9,8 @@ from typing import Any
 
 from .. import db
 from ..config import settings
-from ..models import DeepDive, ProfileDigest
+from ..models import DeepDive
+from .profile import Candidate
 from ..opencode import OpencodeError, SessionCancelled, run_session
 from ..prompts import deepdive_prompt
 from ..textutil import truncate
@@ -18,10 +19,11 @@ from . import progress
 log = logging.getLogger(__name__)
 
 
-def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int) -> dict[str, Any]:
+def run_deepdive(cand: Candidate, workdir: Path, run_id: int) -> dict[str, Any]:
+    criteria = cand.criteria
     cfg = settings()
     rows = db.deepdive_candidates(
-        criteria, cfg.limits.deepdive_min_score, cfg.limits.deepdive_top_n
+        criteria, cfg.limits.deepdive_min_score, cfg.limits.deepdive_top_n, user_id=cand.user_id
     )
     stats: dict[str, Any] = {"deepdived": 0, "failed": 0, "strong": 0, "ineligible": 0}
     if not rows:
@@ -42,7 +44,7 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
         posting = truncate(row["description"] or "", cfg.limits.posting_chars)
         try:
             result = run_session(
-                deepdive_prompt(digest, job, posting),
+                deepdive_prompt(cand, job, posting),
                 workdir / f"deepdive-{i:03d}",
                 DeepDive,
                 title=f"deepdive {row['company']} {row['title']}"[:60],
@@ -64,6 +66,7 @@ def run_deepdive(digest: ProfileDigest, criteria: str, workdir: Path, run_id: in
                 run_id=run_id,
                 stage="deepdive",
                 criteria_hash=criteria,
+                user_id=cand.user_id,
                 score=result.score,
                 verdict=result.verdict,
                 eligible=result.eligible,

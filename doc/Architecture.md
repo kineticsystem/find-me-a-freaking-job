@@ -38,16 +38,18 @@ One run, in order (`jobfinder/pipeline/run.py`):
 
 | Stage | Module | LLM | Purpose |
 |---|---|---|---|
-| profile | `pipeline/profile.py` | once, cached | CV + notes → a compact `ProfileDigest` (~800 tokens) injected into every later prompt. Rebuilt only when the CV or notes change (content hash). The notes themselves are also injected verbatim into every judgement (`limits.notes_chars`): the digest compresses, and nuance such as "knows X but is not a Y" must not be. |
+| profile | `pipeline/profile.py` | once per user, cached | For every user whose profile is complete (`candidates()`): CV + notes → a compact `ProfileDigest` (~800 tokens) injected into every later prompt for that user. Stored on `user_profile`, rebuilt only when the CV or notes change (content hash). The notes themselves are also injected verbatim into every judgement (`limits.notes_chars`): the digest compresses, and nuance such as "knows X but is not a Y" must not be. |
 | fetch | `pipeline/fetch.py`, `sources/` | no | Every enabled source in a thread pool. One failing board never fails the run; failures are recorded per source and a source is disabled after five in a row. |
 | harvest | `discovery.py` | no | See Discovery. |
 | extract | `pipeline/extract.py` | batched | Prose adverts (HN "Who is hiring" comments) → structured postings. Output-token bound, so batches are small and capped per run; each comment is only ever structured once. |
-| prefilter | `prefilter.py` | no | Keyword gate. Bulk aggregators return every job on earth; this drops the medical coders before any inference is spent. Deliberately permissive — it removes the obviously irrelevant and leaves judgement to the model. |
+| prefilter | `prefilter.py` | no | Keyword gate. Bulk aggregators return every job on earth; this drops the medical coders before any inference is spent. Deliberately permissive — it removes the obviously irrelevant and leaves judgement to the model. With several users a posting is stored if it passes for any of them. |
 | store | `pipeline/fetch.py`, `db.py` | no | Normalise, fingerprint, upsert. |
-| triage | `pipeline/triage.py` | batched | 12 postings per session, title + company + location + 700-char excerpt each. Score 0–100 and a one-line reason. Cheap and wide. |
-| deep dive | `pipeline/deepdive.py` | one per job | Only postings above `deepdive_min_score`, at most `deepdive_top_n`. The full posting (truncated at 20K chars), an explicit eligibility judgement, summary, salary, stack, concerns. Expensive and narrow. |
+| triage | `pipeline/triage.py` | batched, per user | 12 postings per session, title + company + location + 700-char excerpt each. Score 0–100 and a one-line reason. Cheap and wide. |
+| deep dive | `pipeline/deepdive.py` | one per job, per user | Only postings above `deepdive_min_score`, at most `deepdive_top_n`. The full posting (truncated at 20K chars), an explicit eligibility judgement, summary, salary, stack, concerns. Expensive and narrow. |
 | websearch | `discovery.py` | queries only | See Discovery. |
-| digest | `pipeline/digest.py` | no | `runs/<ts>/digest.md` and `runs/latest-digest.md`. |
+| digest | `pipeline/digest.py` | no | `runs/<ts>/digest.md` and `runs/latest-digest.md`, a section per user. |
+
+Fetching happens once per run for everyone (a company board returns the same list whoever asks); the keyword channel, which queries a board with terms from a CV, runs per user. Scoring is then a loop over users: each is triaged and deep-dived under their own criteria hash, so a posting has one row in `jobs` and one score per person. Stop ends the loop at the next unit boundary.
 
 The two-stage triage/deep-dive split is the cost model: a batched pass over everything, a per-item pass over survivors. The expensive stage sees the fewest items.
 
@@ -122,13 +124,14 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 | `evaluations` | One row per (job, user, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
 | `users` | One row per user: `email` (unique), `password_hash` (Argon2id via `pwdlib`; never the password), `is_admin`. `init_db` creates user 1, who becomes the admin the moment an account is created, so a single-user database becomes that person's on first login. |
 | `api_tokens` | Login sessions and, later, personal access tokens: `user_id`, `token_hash` (SHA-256 of the token — the token itself is shown once and never stored), `name`, `created_at`, `expires_at`, `last_used_at`. One row per device; a logout is one DELETE, "everywhere" is one DELETE by user. |
+| `user_profile` | One row per user: the CV as uploaded (`cv_data`, `cv_name`) and the text pulled out of it (`cv_text`, pypdf for PDFs), the notes, and the model's digest of both with the source hash it was made from. In the database rather than files so `jobs.db` is the whole backup. A pre-login `profile/` folder is imported into user 1 once, on start. |
 | `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
 | `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
 | `discovery_log` | What discovery has already tried or seen. |
 
-**Per user.** Every query over scores and decisions takes a `user_id`, supplied by the API from the bearer token. Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
+**Per user.** `pipeline/profile.py` builds a `Candidate` per user — id, preferences, CV text, notes, digest, and from those the criteria hash — and everything that judges a posting takes one: the prompts, triage, deep dive, keyword sources, query generation, the report. Every query over scores and decisions takes a `user_id`, supplied by the API from the bearer token. Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
 
 **Criteria hash.** Every evaluation is stamped with `sha256(profile_digest_hash | preferences_hash)`. A job "needs evaluation" when it has no row for the current hash. So editing the CV, the notes or `preferences.yaml` automatically makes every job eligible for re-scoring on the next run, and the old scores remain queryable.
 

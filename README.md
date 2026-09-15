@@ -49,11 +49,11 @@ The model itself is downloaded on the first start, into `~/.cache/huggingface` o
 
 Everything the model knows about you comes from three things, all set from the web app. Until all three are done the app shows a checklist at the top of the page and does not scan at all — no postings are fetched until it knows who it is working for.
 
-Your own files — `config/settings.yaml`, `profile/notes.md` and your CV — are created on first start from the `.example` templates and are git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches them. Your preferences are kept in the database (one set per user), edited in the web app.
+All three are yours alone — one set per account, kept in the database at `data/jobs.db`, which is git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches it. Back that one file up and you have everything. The only file you edit by hand is `config/settings.yaml`, created on first start from its `.example`.
 
 ### Your CV
 
-⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text. It is stored as `profile/cv.<ext>`; uploading again replaces it.
+⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text; uploading again replaces it. (Upgrading from a version that read `profile/cv.*` and `profile/notes.md` from disk: both are imported into the first account on the next start and renamed `.imported`.)
 
 ### Your notes
 
@@ -164,7 +164,7 @@ Optionally, in the Cloudflare dashboard, Zero Trust → Access → Applications,
 
 ### More than one person
 
-The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own preferences, shortlist, applied list and dismissals; the postings are shared, and so are — for now — the CV, the notes, the sources and the scan itself, which only the admin controls. Per-user CVs and scans are the next step (see `multiuser-plan.md`).
+The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own CV, notes, preferences, shortlist, applied list and dismissals, and is scored against their own; the postings are shared. A scan fetches once for everyone, then scores for each person whose profile is complete — one person with a finished profile is enough for scans to start; the others join as they complete theirs. The sources and the scan schedule are the installation's, so only the admin edits them; making sources per person is the next step (see `multiuser-plan.md`).
 
 A forgotten password cannot be recovered, only replaced: the admin sets a new one from *Users*, which logs that person out everywhere.
 

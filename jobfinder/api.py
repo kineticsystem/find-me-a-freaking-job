@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,7 @@ from . import config as config_mod
 from .config import ROOT, Preferences, preferences, settings, write_top_level_setting
 from .config import reload as reload_config
 from .pipeline import run as run_mod
-from .pipeline import criteria as criteria_mod
+from .pipeline import profile as profile_mod
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ Status = Literal["new", "shortlisted", "applied", "dismissed", "archived"]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    profile_mod.import_legacy_files()
     discovery.seed_from_config()
     scheduler.start()
     try:
@@ -71,24 +72,33 @@ def _decode_lists(job: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health(request: Request) -> dict[str, Any]:
+    """Open to everyone for the installation's state; the per-user parts
+    (set-up checklist, stale scores, counts) are filled in when a valid
+    token comes along, and null otherwise."""
     from .pipeline import profile as prof
     from .pipeline import progress
 
-    criteria = criteria_mod.current_criteria_hash()
-    return {
+    user = auth.optional_user(request)
+    out: dict[str, Any] = {
         "ok": True,
         "needs_setup": not db.any_user_can_login(),  # no account yet: the UI shows the first-user screen
-        "setup": prof.readiness(),
         "running": run_mod.is_running(),
         "progress": progress.snapshot(),
-        "stale_scores": db.stale_score_count(criteria),
         "next_run": scheduler.next_run(),
         "interval_minutes": settings().interval_minutes,
-        "criteria": criteria,
         "opencode": opencode.health_check(),
-        "stats": db.stats(),
+        "setup": None, "stale_scores": None, "criteria": None, "stats": None,
     }
+    if user:
+        cand = prof.load(user["id"])
+        out.update({
+            "setup": cand.readiness,
+            "stale_scores": db.stale_score_count(cand.criteria, user_id=user["id"]),
+            "criteria": cand.criteria,
+            "stats": db.stats(user_id=user["id"]),
+        })
+    return out
 
 
 @user_api.get("/jobs")
@@ -181,13 +191,14 @@ def list_runs(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
 
 
 @admin_api.post("/runs")
-def trigger_run() -> dict[str, Any]:
+def trigger_run(admin: AdminUser) -> dict[str, Any]:
+    """A scan scores every user with a complete profile; it needs at least one."""
     from .pipeline import profile as prof
 
-    ready = prof.readiness()
-    if not ready["ready"]:
+    if not prof.candidates():
+        ready = prof.readiness(admin["id"])
         missing = [k for k in ("cv", "notes", "preferences") if not ready[k]]
-        raise HTTPException(409, "not scanning until set-up is complete; missing: " + ", ".join(missing))
+        raise HTTPException(409, "not scanning until at least one profile is complete; yours is missing: " + ", ".join(missing))
     if run_mod.is_running():
         raise HTTPException(409, "a run is already in progress")
     if not scheduler.trigger_now():
@@ -353,42 +364,53 @@ def update_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# profile: the CV and the notes, editable from the UI
+# profile: the current user's CV and notes, in the database
 # --------------------------------------------------------------------------
-@admin_api.get("/profile")
-def get_profile() -> dict[str, Any]:
+@user_api.get("/profile")
+def get_profile(user: CurrentUser) -> dict[str, Any]:
     from .pipeline import profile as prof
 
-    return prof.profile_status()
+    return prof.profile_status(user["id"])
 
 
-@admin_api.post("/profile/cv")
-async def upload_cv(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Replace the CV. Saved as profile/cv.<ext>; any previous CV is removed.
-    The profile digest is rebuilt and every job re-scored on the next run."""
+@user_api.get("/profile/cv")
+def download_cv(user: CurrentUser) -> Response:
+    """The CV as uploaded, for the person it belongs to."""
+    found = db.get_cv_blob(user["id"])
+    if not found:
+        raise HTTPException(404, "no CV uploaded")
+    name, data = found
+    media = "application/pdf" if name.endswith(".pdf") else "text/plain; charset=utf-8"
+    return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@user_api.post("/profile/cv")
+async def upload_cv(user: CurrentUser, file: UploadFile = File(...)) -> dict[str, Any]:
+    """Replace the CV; the previous one is gone. The profile digest is
+    rebuilt and every job re-scored for this user on the next run."""
     from .pipeline import profile as prof
 
     data = await file.read()
     try:
-        saved = prof.replace_cv(file.filename or "", data)
+        saved = prof.replace_cv(user["id"], file.filename or "", data)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    status = prof.profile_status()
+    status = prof.profile_status(user["id"])
     if status["cv_chars"] == 0:
-        raise HTTPException(400, f"{saved.name} was saved but no text could be extracted from it")
-    return {"ok": True, "saved": saved.name, **status}
+        raise HTTPException(400, f"{saved} was saved but no text could be extracted from it")
+    return {"ok": True, "saved": saved, **status}
 
 
 class NotesUpdate(BaseModel):
     text: str = Field(..., max_length=20000)
 
 
-@admin_api.put("/profile/notes")
-def update_notes(body: NotesUpdate) -> dict[str, Any]:
+@user_api.put("/profile/notes")
+def update_notes(body: NotesUpdate, user: CurrentUser) -> dict[str, Any]:
     from .pipeline import profile as prof
 
-    prof.write_notes(body.text)
-    return {"ok": True, **prof.profile_status()}
+    prof.write_notes(user["id"], body.text)
+    return {"ok": True, **prof.profile_status(user["id"])}
 
 
 # --------------------------------------------------------------------------
@@ -407,7 +429,7 @@ def _require_confirmation(body: ResetRequest) -> None:
 
 @admin_api.post("/reset/jobs")
 def reset_jobs(body: ResetRequest) -> dict[str, Any]:
-    """Delete every job, score, decision and run. Sources and your profile stay."""
+    """Delete every job, score, decision and run. Sources and profiles stay."""
     _require_confirmation(body)
     deleted = db.delete_all_jobs()
     log.warning("all jobs deleted from the UI: %s", deleted)
@@ -449,7 +471,7 @@ def reload() -> dict[str, Any]:
     except config_mod.ConfigError as exc:
         raise HTTPException(400, exc.message) from exc
     added = discovery.seed_from_config()
-    return {"ok": True, "new_sources": added, "criteria": criteria_mod.current_criteria_hash()}
+    return {"ok": True, "new_sources": added}
 
 
 # --------------------------------------------------------------------------

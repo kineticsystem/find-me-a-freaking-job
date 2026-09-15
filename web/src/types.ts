@@ -97,12 +97,13 @@ export interface Health {
   ok: boolean
   needs_setup: boolean
   progress: Progress
-  stale_scores: number
-  setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean }
+  stale_scores: number | null
+  /** Per-user parts: null when the request carried no valid token. */
+  setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean } | null
   running: boolean
   next_run: string | null
   interval_minutes: number
-  stats: Record<string, number>
+  stats: Record<string, number> | null
 }
 
 export interface JobQuery {

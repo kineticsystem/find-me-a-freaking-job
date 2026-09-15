@@ -73,6 +73,12 @@ def _bearer(request: Request) -> str | None:
     return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
+def optional_user(request: Request) -> dict[str, Any] | None:
+    """The user behind the bearer token if there is a valid one, else None."""
+    token = _bearer(request)
+    return user_for_token(token) if token else None
+
+
 def current_user(request: Request) -> dict[str, Any]:
     """FastAPI dependency: the user behind the bearer token, or 401."""
     token = _bearer(request)

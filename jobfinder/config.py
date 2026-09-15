@@ -295,6 +295,19 @@ def import_preferences_file() -> dict[str, Any] | None:
     return doc
 
 
+def all_preferences() -> list[Preferences]:
+    """Every user's preferences (for the shared fetch stage)."""
+    from . import db
+
+    out = []
+    for user_id, _ in db.all_preferences_docs():
+        try:
+            out.append(preferences(user_id))
+        except ConfigError:
+            continue
+    return out
+
+
 def save_preferences(prefs: "Preferences", user_id: int = DEFAULT_USER_ID) -> None:
     """Validated model in, document out. Invalidates the cache."""
     from . import db
@@ -306,7 +319,6 @@ def save_preferences(prefs: "Preferences", user_id: int = DEFAULT_USER_ID) -> No
 # The user's own files, and the checked-in template each is created from.
 USER_FILES: tuple[tuple[str, str], ...] = (
     ("config/settings.yaml", "config/settings.example.yaml"),
-    ("profile/notes.md", "profile/notes.example.md"),
 )
 
 

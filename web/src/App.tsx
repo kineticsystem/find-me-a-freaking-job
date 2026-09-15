@@ -183,7 +183,7 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
       <header className="topbar">
         <div className="topbar-row">
           <div className="brand">
-            <div>🎯 Find Me a Freaking Job<small>{health ? `${health.stats.jobs} stored` : ''}</small></div>
+            <div>🎯 Find Me a Freaking Job<small>{health?.stats ? `${health.stats.jobs} stored` : ''}</small></div>
             <a className="brand-link" href="http://www.findmeafreakingjob.com" target="_blank" rel="noreferrer noopener">www.findmeafreakingjob.com</a>
           </div>
           <div className="search">
@@ -201,9 +201,9 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
       </header>
 
       <main className="main">
-        {user.is_admin && health && !health.setup.ready && (
+        {health?.setup && !health.setup.ready && (
           <div className="banner setup" role="status">
-            <strong>Complete your <button className="linkish" onClick={() => setSettingsOpen(true)}>⚙ Settings</button> before the first scan:</strong>
+            <strong>Complete your <button className="linkish" onClick={() => setSettingsOpen(true)}>⚙ Settings</button> before your first scan:</strong>
             <ul>
               <li className={health.setup.cv ? 'done' : ''}>{health.setup.cv ? '✓' : '○'} Upload your CV</li>
               <li className={health.setup.notes ? 'done' : ''}>{health.setup.notes ? '✓' : '○'} Write your notes — what you want, in your own words</li>
@@ -221,10 +221,10 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
               {(health.running ? '● scan in progress' : nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') + ` · every ${describe(health.interval_minutes)}`}
             </span>
           )}
-          {health && health.stale_scores > 0 && (
+          {health?.setup && health.stale_scores != null && health.stale_scores > 0 && (
             <span title="Faded scores are from before your last CV, notes or preferences change">
               {health.stale_scores} score{health.stale_scores === 1 ? '' : 's'} from before your last change
-              {health.running ? ' · re-scoring now' : user.is_admin && <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup.ready}>re-score now</button></>}
+              {health.running ? ' · re-scoring now' : user.is_admin && <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup?.ready}>re-score now</button></>}
             </span>
           )}
           <span className="spacer" style={{ flex: 1 }} />
@@ -243,9 +243,9 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
               </button>
             ) : <span className="btn-note">a scan is running</span>
           ) : (
-            user.is_admin && <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health || !health.setup.ready}>▶ Scan now</button>
+            user.is_admin && <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health?.setup?.ready}>▶ Scan now</button>
           )}
-          {user.is_admin && health && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
+          {user.is_admin && health?.setup && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
         </div>
         {health?.running && <ScanProgress p={health.progress} />}
 
