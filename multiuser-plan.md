@@ -87,6 +87,10 @@ Storage stays shared: a posting is stored once and each user's slice is a query 
 6. **Migration of the current single-user data.** Done: rows became user 1's when `user_id` arrived; the first account claims user 1; the author's own `profile/` files were imported into user 1's `user_profile` row and the folder removed; other pre-login installs re-upload in the web app.
 7. **The web app.** Done: a login screen; everything else scoped by the token's user; the Profile section is everyone's, the installation's sections the admin's.
 
+## Considered and deferred
+
+**PostgreSQL instead of SQLite.** Not worth it at this shape: one process, one scan worker (one GPU), a few users who mostly read, a few hundred writes per scan; WAL mode already lets the scan write while the UI reads, blobs the size of a CV are faster in SQLite than on disk, and "back up `jobs.db` and you have everything" is a feature. Postgres starts to earn its keep only with several writers at once (multiple scan workers) or the app split into several processes; neither is planned. Switching would cost a driver change plus a review of ~60 SQLite-flavoured queries and a second container forever. Cheap moves to make first if ever needed: FTS5 for search past ~20K postings; keep the queue single-writer so the door stays open.
+
 ## Not changing
 
 The pipeline stages, the sources, the discovery channels, the opencode integration, the Docker packaging.
