@@ -124,7 +124,7 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 | `evaluations` | One row per (job, user, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
 | `users` | One row per user: `email` (unique), `password_hash` (Argon2id via `pwdlib`; never the password), `is_admin`. `init_db` creates user 1, who becomes the admin the moment an account is created, so a single-user database becomes that person's on first login. |
 | `api_tokens` | Login sessions and, later, personal access tokens: `user_id`, `token_hash` (SHA-256 of the token — the token itself is shown once and never stored), `name`, `created_at`, `expires_at`, `last_used_at`. One row per device; a logout is one DELETE, "everywhere" is one DELETE by user. |
-| `user_profile` | One row per user: the CV as uploaded (`cv_data`, `cv_name`) and the text pulled out of it (`cv_text`, pypdf for PDFs), the notes, and the model's digest of both with the source hash it was made from. In the database rather than files so `jobs.db` is the whole backup. A pre-login `profile/` folder is imported into user 1 once, on start. |
+| `user_profile` | One row per user: the CV as uploaded (`cv_data`, `cv_name`) and the text pulled out of it (`cv_text`, pypdf for PDFs), the notes, and the model's digest of both with the source hash it was made from. In the database rather than files so `jobs.db` is the whole backup. |
 | `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
 | `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
@@ -141,7 +141,7 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 
 ## The user's files
 
-One file is the installation's own and never belongs in the repository: `config/settings.yaml`, created from the checked-in `settings.example.yaml` by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. It is git-ignored, as are `data/`, `runs/` and anything under `profile/` and `config/` that is not an example or the seed list. Everything personal — CV, notes, preferences — is in the database. Two importers remain for installs from before that: `config.import_preferences_file()` (a `config/preferences.yaml`) and `profile.import_legacy_files()` (`profile/cv.*`, `profile/notes.md`, the cached digest), each run once on start and renaming what it took to `.imported`. HTML comments in notes are stripped, so a note that is only a template comment reads as empty.
+One file is the installation's own and never belongs in the repository: `config/settings.yaml`, created from the checked-in `settings.example.yaml` by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. It is git-ignored, as are `data/` and `runs/`. Everything personal — CV, notes, preferences — is in the database. One importer remains for installs from before that: `config.import_preferences_file()` takes a `config/preferences.yaml` into user 1's row once, on start, and renames it `.imported`. A CV or notes from a pre-login install are re-entered in the web app. HTML comments in notes are stripped, so a note that is only a template comment reads as empty.
 
 `Candidate.readiness` reports whether the CV, the notes and the essential preferences (based in, titles) exist for a user. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
 
@@ -177,8 +177,8 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 | POST | `/sources/{id}/enabled?enabled=` · DELETE `/sources/{id}` | toggle · remove (not config-origin) |
 | GET / PATCH | `/settings` | the interval and run-on-start; a PATCH rewrites the key in `config/settings.yaml` in place (comments kept) and reschedules the running scheduler, so no restart |
 | GET | `/profile` | the CV on disk, the notes, the cached digest |
-| POST | `/profile/cv` | multipart upload; saved as `profile/cv.<ext>`, previous CV removed, digest cache dropped |
-| PUT | `/profile/notes` | replaces `profile/notes.md` |
+| GET / POST | `/profile/cv` | download the CV as uploaded · multipart upload, replacing the previous one; the digest is rebuilt and the user re-scored on the next run |
+| PUT | `/profile/notes` | replaces the user's notes |
 | GET / PUT | `/preferences` | the user's preferences document; PUT saves from the form, validated by the same model the pipeline reads, with `location_rules` order becoming the priority and `market_priority` derived from it |
 | POST | `/reset/jobs` · `/reset/all` | `{"confirm": "DELETE"}` — delete every job, score, decision and run (sources and files stay) · that plus the sources and discovery memory, reseeded from config; both refused while a scan runs |
 | POST | `/reload` | re-read YAML without a restart |
@@ -205,7 +205,7 @@ In development `pnpm dev` proxies API paths to `:8099`; in production the built 
 
 One container runs three things: `llama-server` from the fork, the app server, and the web UI. `bin/start.sh` is the entrypoint; it starts the model server and the app and exits when either dies, so `restart: unless-stopped` brings both back together rather than leaving the app running against a dead model.
 
-The split is code-in-image, state-on-host. Bind-mounted from the host: `config/` (the examples are tracked, the real files are not), `profile/`, `data/`, `runs/`, `bin/` (so the model command line can be tuned with a restart), `modules/llama.cpp` (the fork and its build tree), and the model caches `~/.cache/huggingface` and `~/.cache/llama.cpp`. Everything else is baked. The container runs as a user with the host's uid/gid so those directories stay owned by the host user.
+The split is code-in-image, state-on-host. Bind-mounted from the host: `config/` (the example is tracked, the real file is not), `data/`, `runs/`, `bin/` (so the model command line can be tuned with a restart), `modules/llama.cpp` (the fork and its build tree), and the model caches `~/.cache/huggingface` and `~/.cache/llama.cpp`. Everything else is baked. The container runs as a user with the host's uid/gid so those directories stay owned by the host user.
 
 The llama.cpp fork (`TheTom/llama-cpp-turboquant`, for its TurboQuant KV cache) is a git submodule at `modules/llama.cpp`, pinned to a commit. It is compiled inside the container by `bin/build-llama.sh` — CUDA on, `CMAKE_CUDA_ARCHITECTURES=native` so it targets the GPU present — into the bind-mounted submodule, which is what makes the build persistent: it survives container restarts, image rebuilds and `dock.sh clean`. `dock.sh build` compiles it if the binary is missing; `build-llama` forces it.
 
@@ -232,7 +232,6 @@ Both suites have caught real bugs: NULL list fields crashing the card renderer, 
 
 ```
 config/            settings.yaml (yours, git-ignored) and its example; sources.yaml (seed list)
-profile/           import path for a pre-login cv.* / notes.md only; nothing is written here
 data/              jobs.db — postings, scores, decisions, accounts, CVs, notes, preferences (git-ignored)
 jobfinder/         the Python package
   sources/         one adapter per source type

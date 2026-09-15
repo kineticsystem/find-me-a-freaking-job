@@ -2,9 +2,7 @@
 model's digest of the CV.
 
 Everything lives in the database (`user_profile`, `user_preferences`), one
-row per user, so a backup of jobs.db is everything. A `profile/` folder
-from before login (cv.pdf, notes.md) is imported once, for the first user,
-and the files renamed `.imported`.
+row per user, so a backup of jobs.db is everything.
 
 The digest goes into every reasoning prompt, so it must stay under roughly
 800 tokens. It is re-derived only when the CV or the notes actually change.
@@ -22,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
-from ..config import DEFAULT_USER_ID, Preferences, preferences, settings
+from ..config import DEFAULT_USER_ID, Preferences, preferences
 from ..models import ProfileDigest
 from ..opencode import run_session
 from ..prompts import profile_prompt
@@ -191,50 +189,3 @@ def profile_status(user_id: int) -> dict[str, Any]:
         "digest": cand.digest.model_dump() if cand.digest else None,
         "digest_current": cand.digest is not None,
     }
-
-
-# --------------------------------------------------------------------------
-# One-time import of the pre-login profile/ folder
-# --------------------------------------------------------------------------
-def profile_dir() -> Path:
-    return settings().paths.resolve("profile")
-
-
-def import_legacy_files(user_id: int = DEFAULT_USER_ID) -> list[str]:
-    """profile/cv.* and profile/notes.md become the first user's, then are
-    renamed `.imported` so this runs once. A cached digest in
-    profile/.cache is imported too, so no model call is needed."""
-    root = profile_dir()
-    if not root.is_dir():
-        return []
-    done: list[str] = []
-    row = db.get_profile(user_id)
-    cvs = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in CV_SUFFIXES and p.stem.lower() == "cv")
-    if cvs and not row["cv_name"]:
-        src = cvs[0]
-        data = src.read_bytes()
-        db.save_cv(user_id, src.name, data, extract_cv_text(src.name, data))
-        src.rename(src.with_name(src.name + ".imported"))
-        done.append(src.name)
-    notes = root / "notes.md"
-    if notes.is_file() and not (row["notes"] or "").strip():
-        text = notes.read_text(errors="replace")
-        if _clean_notes(text):
-            db.save_notes(user_id, text)
-            notes.rename(root / "notes.md.imported")
-            done.append("notes.md")
-    cache = root / ".cache" / "profile.json"
-    if cache.is_file() and done:
-        try:
-            data = json.loads(cache.read_text())
-            cand = load(user_id)
-            if data.get("source_hash") == cand.source_hash and not cand.digest:
-                digest = ProfileDigest.model_validate(data["digest"])
-                db.save_digest(user_id, cand.source_hash, digest.model_dump_json(indent=2))
-                done.append(".cache/profile.json")
-        except Exception as exc:
-            log.warning("cached digest not imported: %s", exc)
-        cache.rename(cache.with_name("profile.json.imported"))
-    if done:
-        log.info("imported into user %d's profile: %s", user_id, ", ".join(done))
-    return done

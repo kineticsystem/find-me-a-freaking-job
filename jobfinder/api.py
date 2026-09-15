@@ -20,7 +20,6 @@ from . import config as config_mod
 from .config import ROOT, Preferences, preferences, settings, write_top_level_setting
 from .config import reload as reload_config
 from .pipeline import run as run_mod
-from .pipeline import profile as profile_mod
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +30,6 @@ Status = Literal["new", "shortlisted", "applied", "dismissed", "archived"]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    profile_mod.import_legacy_files()
     discovery.seed_from_config()
     scheduler.start()
     try:

@@ -194,14 +194,16 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   // profile section: shows the real CV and notes; never modifies them here
   const prof = await (await api('/profile')).json()
   await page.waitForSelector('.profile-cv strong')
-  check((await page.locator('.profile-cv').textContent()).includes(prof.cv?.name ?? '<none>'), `profile: shows the CV on disk (${prof.cv?.name})`)
-  check((await page.inputValue('#notes')) === prof.notes, 'profile: notes textarea holds notes.md')
+  check((await page.locator('.profile-cv').textContent()).includes(prof.cv?.name ?? '<none>'), `profile: shows the stored CV (${prof.cv?.name})`)
+  check((await page.inputValue('#notes')) === prof.notes, 'profile: notes textarea holds the stored notes')
   check(await page.locator('button:has-text("Save notes")').isDisabled(), 'profile: Save notes disabled until edited')
   await page.locator('#notes').press('End'); await page.keyboard.type(' x')
   check(!(await page.locator('button:has-text("Save notes")').isDisabled()), 'profile: editing enables Save notes')
   await page.click('button:has-text("Discard")')
   check((await page.inputValue('#notes')) === prof.notes, 'profile: Discard restores')
   check(await page.locator('input[type=file]').count() === 1 && (await page.getAttribute('input[type=file]', 'accept')).includes('.pdf'), 'profile: CV upload accepts pdf/md/txt')
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('.profile button:has-text("Download")')])
+  check(download.suggestedFilename() === prof.cv.name, `profile: Download hands back ${download.suggestedFilename()}`)
 
   // preferences: the form reflects the file; never saved here (a save would
   // rewrite the real preferences.yaml)

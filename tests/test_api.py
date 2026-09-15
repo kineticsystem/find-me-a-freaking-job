@@ -220,16 +220,7 @@ def test_settings_change_persists_and_reschedules(client, tmp_path, monkeypatch)
     config.reload()
 
 
-@pytest.fixture()
-def profile_dir(tmp_path, monkeypatch):
-    """An empty legacy profile/ folder, so nothing on disk is imported."""
-    from jobfinder.pipeline import profile as prof
-    d = tmp_path / "profile"; d.mkdir()
-    monkeypatch.setattr(prof, "profile_dir", lambda: d)
-    return d
-
-
-def test_cv_upload_replaces_previous_and_invalidates_digest(client, profile_dir):
+def test_cv_upload_replaces_previous_and_invalidates_digest(client):
     from jobfinder import db
     db.save_cv(1, "cv.pdf", b"%PDF-old", "old text")
     db.save_digest(1, "stale-hash", "{}")
@@ -244,7 +235,7 @@ def test_cv_upload_replaces_previous_and_invalidates_digest(client, profile_dir)
     assert dl.status_code == 200 and dl.content.startswith(b"# Jane Doe") and 'filename="cv.md"' in dl.headers["content-disposition"]
 
 
-def test_cv_upload_rejects_bad_files(client, profile_dir):
+def test_cv_upload_rejects_bad_files(client):
     assert client.post("/profile/cv", files={"file": ("cv.docx", b"PK..", "application/octet-stream")}).status_code == 400
     assert client.post("/profile/cv", files={"file": ("cv.pdf", b"not a pdf", "application/pdf")}).status_code == 400
     assert client.post("/profile/cv", files={"file": ("cv.txt", b"", "text/plain")}).status_code == 400
@@ -252,7 +243,7 @@ def test_cv_upload_rejects_bad_files(client, profile_dir):
     assert client.get("/profile/cv").status_code == 404
 
 
-def test_notes_round_trip(client, profile_dir):
+def test_notes_round_trip(client):
     r = client.put("/profile/notes", json={"text": "I want remote C++ work.\n\nNo agencies."})
     assert r.status_code == 200
     assert client.get("/profile").json()["notes"] == "I want remote C++ work.\n\nNo agencies.\n"
@@ -422,7 +413,7 @@ def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
     config.settings.cache_clear(); config.preferences.cache_clear()
 
 
-def test_notes_go_into_every_judgement_verbatim(client, profile_dir, monkeypatch):
+def test_notes_go_into_every_judgement_verbatim(client, monkeypatch):
     from jobfinder.pipeline import profile as prof
     from jobfinder.prompts import deepdive_prompt, triage_prompt
     entry = [{"ref": 1, "company": "X", "title": "Y", "location": "Z", "remote_type": "remote", "salary": "", "excerpt": "..."}]
@@ -456,7 +447,7 @@ def test_example_settings_are_valid():
     config.Settings.model_validate(__import__("yaml").safe_load((config.ROOT / "config/settings.example.yaml").read_text()))
 
 
-def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, tmp_db, monkeypatch):
+def test_readiness_checklist_and_no_scan_until_ready(client, tmp_db, monkeypatch):
     import jobfinder.config as config
     from jobfinder.pipeline import profile as prof
     from jobfinder.pipeline import run as run_mod
@@ -483,29 +474,6 @@ def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, tmp_db
 def test_health_without_a_token_has_no_per_user_parts(anon_client):
     h = anon_client.get("/health").json()
     assert h["ok"] is True and h["setup"] is None and h["stats"] is None and h["stale_scores"] is None
-
-
-def test_legacy_profile_folder_is_imported_once_for_the_first_user(profile_dir, tmp_db):
-    import json
-    from jobfinder import db
-    from jobfinder.pipeline import profile as prof
-    (profile_dir / "README.md").write_text("# docs")
-    (profile_dir / "random.txt").write_text("not a cv")
-    assert prof.import_legacy_files() == [] and prof.readiness(1)["cv"] is False   # only cv.<ext> counts
-    (profile_dir / "cv.md").write_text("# Jane Doe\nEngineer.")
-    (profile_dir / "notes.md").write_text("<!-- template -->\nI want remote work.\n")
-    (profile_dir / ".cache").mkdir()
-    from jobfinder.config import preferences
-    src_hash = prof.Candidate(1, "x", preferences(1), prof.extract_cv_text("cv.md", b"# Jane Doe\nEngineer."), "I want remote work.").source_hash
-    (profile_dir / ".cache" / "profile.json").write_text(json.dumps({"source_hash": src_hash, "digest": {
-        "headline": "Engineer", "core_skills": ["a"], "summary": "s" * 40, "search_keywords": ["a", "b", "c"]}}))
-    assert prof.import_legacy_files() == ["cv.md", "notes.md", ".cache/profile.json"]
-    cand = prof.load(1)
-    assert cand.readiness["cv"] and cand.readiness["notes"] and cand.digest is not None and cand.digest.headline == "Engineer"
-    assert db.get_cv_blob(1) == ("cv.md", b"# Jane Doe\nEngineer.")
-    assert sorted(p.name for p in profile_dir.iterdir() if p.name.endswith(".imported")) == ["cv.md.imported", "notes.md.imported"]
-    assert (profile_dir / ".cache" / "profile.json.imported").exists()
-    assert prof.import_legacy_files() == []                                  # once
 
 
 def test_add_source_finds_the_board_behind_a_careers_page(client, tmp_db, monkeypatch):

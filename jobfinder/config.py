@@ -100,7 +100,6 @@ class ApiSettings(BaseModel):
 class Paths(BaseModel):
     db: str = "data/jobs.db"
     runs: str = "runs"
-    profile: str = "profile"
 
     def resolve(self, attr: str) -> Path:
         p = Path(getattr(self, attr))

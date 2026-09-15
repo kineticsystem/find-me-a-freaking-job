@@ -160,3 +160,15 @@ export const createUser = (email: string, password: string, is_admin: boolean) =
 export const resetUserPassword = (id: number, password: string) =>
   request<{ ok: true }>(`/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) })
 export const deleteUser = (id: number) => request<{ ok: true }>(`/users/${id}`, { method: 'DELETE' })
+
+/** The CV as uploaded. A plain link cannot carry the bearer header, so it is
+ * fetched and handed to the browser as a blob. */
+export async function downloadCv(): Promise<void> {
+  const res = await fetch('/profile/cv', { headers: authHeaders() })
+  if (!res.ok) throw new ApiError(res.status, res.status === 404 ? 'No CV uploaded' : res.statusText)
+  const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'cv'
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement('a')
+  a.href = url; a.download = name; a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}

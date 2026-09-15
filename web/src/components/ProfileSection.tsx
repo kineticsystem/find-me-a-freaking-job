@@ -70,6 +70,9 @@ export function ProfileSection({ notify, onChanged }: Props) {
         <button className="btn btn-sm" disabled={uploading} onClick={() => fileInput.current?.click()}>
           {uploading ? 'Uploading…' : profile?.cv ? 'Replace CV' : 'Upload CV'}
         </button>
+        {profile?.cv && (
+          <button className="btn btn-sm" onClick={() => api.downloadCv().catch((e) => notify(e instanceof Error ? e.message : 'Download failed', true))}>Download</button>
+        )}
       </div>
 
       {profile?.digest && (

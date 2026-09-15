@@ -53,7 +53,7 @@ All three are yours alone — one set per account, kept in the database at `data
 
 ### Your CV
 
-⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text; uploading again replaces it. (Upgrading from a version that read `profile/cv.*` and `profile/notes.md` from disk: both are imported into the first account on the next start and renamed `.imported`.)
+⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text; uploading again replaces it.
 
 ### Your notes
 
@@ -224,7 +224,7 @@ test.sh                               # the API tests
 
 Every run leaves a full record in `runs/<timestamp>/`: each prompt sent to the model, each reply, and the JSON it produced. If a score does not make sense, that directory shows exactly what the model was told and what it said.
 
-`doctor` covers the common failures: model server down, no CV in `profile/`, a wrong `llm.base_url`.
+`doctor` covers the common failures: model server down, a user without a CV, a wrong `llm.base_url`.
 
 A broken `config/preferences.yaml` or `config/settings.yaml` (a typo while editing by hand) stops the app from starting, on purpose: it will not run on values it was not given. `./docker/dock.sh jobfinder start` then prints the reason — the file, the line and column, or the invalid field — and the fix is to correct the file and start again. Files saved from the web app are always valid; this only happens after hand edits. `./docker/dock.sh jobfinder shell -c 'jobfinder.sh check'` validates the files on demand.
 

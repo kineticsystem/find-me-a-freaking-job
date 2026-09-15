@@ -44,7 +44,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .pipeline.run import run_once
 
     db.init_db()
-    profile.import_legacy_files()
     stats = run_once(skip_llm=args.no_llm)
     print(json.dumps(stats, indent=2, default=str))
     return 1 if stats.get("error") else 0
@@ -103,7 +102,6 @@ def cmd_profile(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     db.init_db()
-    profile.import_legacy_files()
     cand = profile.load(args.user)
     print(f"# {cand.name}: {cand.readiness}")
     if not cand.ready:
@@ -237,7 +235,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"opencode:  {opencode.health_check()}")
     try:
         db.init_db()
-        profile.import_legacy_files()
         for u in db.list_users():
             c = profile.load(u["id"])
             r = c.readiness

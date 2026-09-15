@@ -75,7 +75,7 @@ COPY --chown=developer:developer --from=web /web/dist ./web/dist/
 
 # State and the llama.cpp source+build live in these; compose bind-mounts
 # them from the host. The model cache is mounted under ~/.cache.
-RUN mkdir -p config profile data runs modules/llama.cpp /home/developer/.cache
+RUN mkdir -p config data runs modules/llama.cpp /home/developer/.cache
 
 # ./bin on the PATH so `docker exec <name> run-once.sh` works without a shell,
 # and the venv and opencode likewise.
