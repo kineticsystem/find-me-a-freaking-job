@@ -16,6 +16,14 @@ from .config import settings
 from .models import NormalizedJob, utcnow
 
 SCHEMA = """
+-- Users. Until login exists there is exactly one, the default user (id 1),
+-- created by init_db. Everything per-user hangs off this id from now on.
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id            INTEGER PRIMARY KEY,
     fingerprint   TEXT NOT NULL UNIQUE,
@@ -41,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen DESC);
 CREATE TABLE IF NOT EXISTS evaluations (
     id             INTEGER PRIMARY KEY,
     job_id         INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    user_id        INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
     run_id         INTEGER REFERENCES runs(id),
     stage          TEXT NOT NULL,           -- 'triage' | 'deepdive'
     criteria_hash  TEXT NOT NULL,
@@ -58,15 +67,18 @@ CREATE TABLE IF NOT EXISTS evaluations (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_job ON evaluations(job_id, stage);
 CREATE INDEX IF NOT EXISTS idx_eval_criteria ON evaluations(criteria_hash);
+-- idx_eval_user is created in init_db, after the user_id migration has run.
 
 -- Your actions. Deliberately separate from evaluations so a re-run never
 -- overwrites what you decided.
 CREATE TABLE IF NOT EXISTS user_state (
-    job_id     INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
     status     TEXT NOT NULL DEFAULT 'new',   -- new|shortlisted|applied|dismissed|archived
     notes      TEXT,
     reason     TEXT,                          -- why it was dismissed; fed back into scoring
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -91,14 +103,6 @@ CREATE TABLE IF NOT EXISTS sources (
     last_error    TEXT,
     jobs_found    INTEGER NOT NULL DEFAULT 0,
     fail_count    INTEGER NOT NULL DEFAULT 0
-);
-
--- Users. Until login exists there is exactly one, the default user (id 1),
--- created by init_db. Everything per-user hangs off this id from now on.
-CREATE TABLE IF NOT EXISTS users (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL,
-    created_at TEXT NOT NULL
 );
 
 -- One preferences document per user: the whole Preferences model as JSON,
@@ -154,17 +158,73 @@ MIGRATIONS = [
 DEFAULT_USER_ID = 1
 
 
+def _migrate_per_user(conn: sqlite3.Connection) -> None:
+    """Scores and decisions became per user. SQLite can neither change a
+    primary key in place nor add a foreign-key column with a default, so an
+    old single-user table is rebuilt, every existing row becoming the
+    default user's. Nothing is lost."""
+    if "user_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(evaluations)")}:
+        conn.executescript("""
+            CREATE TABLE evaluations_v2 (
+                id             INTEGER PRIMARY KEY,
+                job_id         INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                user_id        INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+                run_id         INTEGER REFERENCES runs(id),
+                stage          TEXT NOT NULL,
+                criteria_hash  TEXT NOT NULL,
+                score          INTEGER NOT NULL,
+                verdict        TEXT NOT NULL,
+                eligible       INTEGER,
+                summary        TEXT,
+                eligibility    TEXT,
+                salary         TEXT,
+                tech_stack     TEXT,
+                concerns       TEXT,
+                rationale      TEXT,
+                model          TEXT,
+                created_at     TEXT NOT NULL
+            );
+            INSERT INTO evaluations_v2 (id, job_id, user_id, run_id, stage, criteria_hash, score, verdict, eligible,
+                                        summary, eligibility, salary, tech_stack, concerns, rationale, model, created_at)
+                SELECT id, job_id, 1, run_id, stage, criteria_hash, score, verdict, eligible,
+                       summary, eligibility, salary, tech_stack, concerns, rationale, model, created_at FROM evaluations;
+            DROP TABLE evaluations;
+            ALTER TABLE evaluations_v2 RENAME TO evaluations;
+            CREATE INDEX IF NOT EXISTS idx_eval_job ON evaluations(job_id, stage);
+            CREATE INDEX IF NOT EXISTS idx_eval_criteria ON evaluations(criteria_hash);
+        """)
+    if "user_id" in {r["name"] for r in conn.execute("PRAGMA table_info(user_state)")}:
+        return
+    conn.executescript("""
+        CREATE TABLE user_state_v2 (
+            job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            user_id    INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+            status     TEXT NOT NULL DEFAULT 'new',
+            notes      TEXT,
+            reason     TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, user_id)
+        );
+        INSERT INTO user_state_v2 (job_id, user_id, status, notes, reason, updated_at)
+            SELECT job_id, 1, status, notes, reason, updated_at FROM user_state;
+        DROP TABLE user_state;
+        ALTER TABLE user_state_v2 RENAME TO user_state;
+    """)
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
-        for table, column, ddl in MIGRATIONS:
-            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
-            if column not in have:
-                conn.execute(ddl)
         conn.execute(
             "INSERT OR IGNORE INTO users (id, name, created_at) VALUES (?, 'default', ?)",
             (DEFAULT_USER_ID, utcnow()),
         )
+        for table, column, ddl in MIGRATIONS:
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                conn.execute(ddl)
+        _migrate_per_user(conn)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_user ON evaluations(user_id, job_id, stage)")
 
 
 # --------------------------------------------------------------------------
@@ -223,46 +283,42 @@ def upsert_job(conn: sqlite3.Connection, job: NormalizedJob) -> tuple[int, bool]
         ),
     )
     job_id = int(cur.lastrowid)
-    conn.execute(
-        "INSERT OR IGNORE INTO user_state (job_id, status, updated_at) VALUES (?, 'new', ?)",
-        (job_id, now),
-    )
     return job_id, True
 
 
-def jobs_needing(stage: str, criteria_hash: str, limit: int) -> list[sqlite3.Row]:
-    """Jobs with no evaluation for this stage under the current criteria."""
+def jobs_needing(stage: str, criteria_hash: str, limit: int, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
+    """Jobs with no evaluation for this user and stage under the current criteria."""
     with connect() as conn:
         return conn.execute(
             """SELECT j.* FROM jobs j
-               LEFT JOIN user_state u ON u.job_id = j.id
+               LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE COALESCE(u.status, 'new') NOT IN ('dismissed', 'archived')
                  AND NOT EXISTS (
                        SELECT 1 FROM evaluations e
-                       WHERE e.job_id = j.id AND e.stage = ?
+                       WHERE e.job_id = j.id AND e.user_id = ? AND e.stage = ?
                          AND e.criteria_hash = ?)
                ORDER BY j.first_seen DESC
                LIMIT ?""",
-            (stage, criteria_hash, limit),
+            (user_id, user_id, stage, criteria_hash, limit),
         ).fetchall()
 
 
-def deepdive_candidates(criteria_hash: str, min_score: int, limit: int) -> list[sqlite3.Row]:
+def deepdive_candidates(criteria_hash: str, min_score: int, limit: int, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
             """SELECT j.*, e.score AS triage_score FROM jobs j
-               JOIN evaluations e ON e.job_id = j.id
+               JOIN evaluations e ON e.job_id = j.id AND e.user_id = ?
                     AND e.stage = 'triage' AND e.criteria_hash = ?
-               LEFT JOIN user_state u ON u.job_id = j.id
+               LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE e.score >= ?
                  AND COALESCE(u.status, 'new') NOT IN ('dismissed', 'archived')
                  AND NOT EXISTS (
                        SELECT 1 FROM evaluations d
-                       WHERE d.job_id = j.id AND d.stage = 'deepdive'
+                       WHERE d.job_id = j.id AND d.user_id = ? AND d.stage = 'deepdive'
                          AND d.criteria_hash = ?)
                ORDER BY e.score DESC
                LIMIT ?""",
-            (criteria_hash, min_score, criteria_hash, limit),
+            (user_id, criteria_hash, user_id, min_score, user_id, criteria_hash, limit),
         ).fetchall()
 
 
@@ -283,14 +339,15 @@ def record_evaluation(
     tech_stack: Iterable[str] = (),
     concerns: Iterable[str] = (),
     rationale: str = "",
+    user_id: int = DEFAULT_USER_ID,
 ) -> None:
     conn.execute(
-        """INSERT INTO evaluations (job_id, run_id, stage, criteria_hash, score,
+        """INSERT INTO evaluations (job_id, user_id, run_id, stage, criteria_hash, score,
                verdict, eligible, summary, eligibility, salary, tech_stack,
                concerns, rationale, model, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            job_id, run_id, stage, criteria_hash, score, verdict,
+            job_id, user_id, run_id, stage, criteria_hash, score, verdict,
             None if eligible is None else int(eligible), summary, eligibility,
             salary, json.dumps(list(tech_stack)), json.dumps(list(concerns)),
             rationale, model, utcnow(),
@@ -298,18 +355,12 @@ def record_evaluation(
     )
 
 
-BEST_EVAL_SQL = """
-SELECT e.* FROM evaluations e
-JOIN (SELECT job_id, MAX(id) AS mid FROM evaluations
-      WHERE criteria_hash = ? GROUP BY job_id, stage) x ON x.mid = e.id
-"""
-
-
 def list_jobs(
     *, min_score: int = 0, status: str | None = None, source: str | None = None,
     query: str | None = None, remote: str | None = None,
     hidden: bool = False, sort: str = "score",
     limit: int = 100, offset: int = 0, criteria_hash: str | None = None,
+    user_id: int = DEFAULT_USER_ID,
 ) -> tuple[list[dict[str, Any]], int]:
     """Jobs joined with their best current evaluation. Returns (page, total).
 
@@ -331,10 +382,10 @@ def list_jobs(
             SELECT job_id,
                    MAX(CASE WHEN stage='triage' THEN score END) AS triage_score,
                    MAX(CASE WHEN stage='deepdive' THEN id END) AS dd_id
-            FROM evaluations WHERE criteria_hash = ? GROUP BY job_id
+            FROM evaluations WHERE user_id = ? AND criteria_hash = ? GROUP BY job_id
         ),
         stale AS (
-            SELECT job_id, MAX(id) AS eid FROM evaluations WHERE criteria_hash != ? GROUP BY job_id
+            SELECT job_id, MAX(id) AS eid FROM evaluations WHERE user_id = ? AND criteria_hash != ? GROUP BY job_id
         )
         SELECT j.*, COALESCE(u.status,'new') AS status, u.notes, u.reason,
                COALESCE(d.score, b.triage_score, o.score) AS score,
@@ -348,11 +399,11 @@ def list_jobs(
         LEFT JOIN evaluations d ON d.id = b.dd_id
         LEFT JOIN stale s ON s.job_id = j.id AND b.job_id IS NULL
         LEFT JOIN evaluations o ON o.id = s.eid
-        LEFT JOIN user_state u ON u.job_id = j.id
+        LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
         -- unevaluated jobs count as 0, so min_score=0 shows everything
         WHERE COALESCE(d.score, b.triage_score, o.score, 0) >= ?
     """
-    params: list[Any] = [ch, ch, min_score]
+    params: list[Any] = [user_id, ch, user_id, ch, user_id, min_score]
     if status:
         sql += " AND COALESCE(u.status,'new') = ?"
         params.append(status)
@@ -387,16 +438,16 @@ def list_jobs(
         return [dict(r) for r in rows], int(total)
 
 
-def get_job(job_id: int, criteria_hash: str | None = None) -> dict[str, Any] | None:
+def get_job(job_id: int, criteria_hash: str | None = None, user_id: int = DEFAULT_USER_ID) -> dict[str, Any] | None:
     from .pipeline.criteria import current_criteria_hash
 
     ch = criteria_hash or current_criteria_hash()
     with connect() as conn:
         row = conn.execute(
             """SELECT j.*, COALESCE(u.status,'new') AS status, u.notes, u.reason
-               FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id
+               FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE j.id = ?""",
-            (job_id,),
+            (user_id, job_id),
         ).fetchone()
         if not row:
             return None
@@ -404,7 +455,7 @@ def get_job(job_id: int, criteria_hash: str | None = None) -> dict[str, Any] | N
         job["evaluations"] = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM evaluations WHERE job_id = ? ORDER BY id DESC", (job_id,)
+                "SELECT * FROM evaluations WHERE job_id = ? AND user_id = ? ORDER BY id DESC", (job_id, user_id)
             ).fetchall()
         ]
         job["current_criteria"] = ch
@@ -412,7 +463,7 @@ def get_job(job_id: int, criteria_hash: str | None = None) -> dict[str, Any] | N
 
 
 def set_user_state(job_id: int, status: str, notes: str | None = None,
-                   reason: str | None = None) -> bool:
+                   reason: str | None = None, user_id: int = DEFAULT_USER_ID) -> bool:
     """Record a decision. `reason` is kept only while the job is dismissed:
     restoring it clears the reason so it stops influencing scores."""
     with connect() as conn:
@@ -421,30 +472,30 @@ def set_user_state(job_id: int, status: str, notes: str | None = None,
         if status != "dismissed":
             reason = None
         conn.execute(
-            """INSERT INTO user_state (job_id, status, notes, reason, updated_at)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT(job_id) DO UPDATE SET
+            """INSERT INTO user_state (job_id, user_id, status, notes, reason, updated_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(job_id, user_id) DO UPDATE SET
                  status = excluded.status,
                  notes = COALESCE(excluded.notes, user_state.notes),
                  reason = CASE WHEN excluded.status = 'dismissed'
                                THEN COALESCE(excluded.reason, user_state.reason)
                                ELSE NULL END,
                  updated_at = excluded.updated_at""",
-            (job_id, status, notes, reason, utcnow()),
+            (job_id, user_id, status, notes, reason, utcnow()),
         )
         return True
 
 
-def recent_rejections(limit: int = 20) -> list[dict[str, Any]]:
-    """Dismissed jobs with a stated reason, newest first: the few-shot
-    negative signal the prompts carry."""
+def recent_rejections(limit: int = 20, user_id: int = DEFAULT_USER_ID) -> list[dict[str, Any]]:
+    """This user's dismissed jobs with a stated reason, newest first: the
+    few-shot negative signal the prompts carry."""
     with connect() as conn:
         rows = conn.execute(
             """SELECT j.company, j.title, j.location, j.remote_type, u.reason, u.updated_at
                FROM user_state u JOIN jobs j ON j.id = u.job_id
-               WHERE u.status = 'dismissed' AND u.reason IS NOT NULL AND u.reason != ''
+               WHERE u.user_id = ? AND u.status = 'dismissed' AND u.reason IS NOT NULL AND u.reason != ''
                ORDER BY u.updated_at DESC, u.job_id DESC LIMIT ?""",
-            (limit,),
+            (user_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -457,7 +508,7 @@ def delete_job(job_id: int) -> bool:
 
 
 def archive_jobs(*, older_than_days: int | None = None, ids: Iterable[int] | None = None,
-                 only_status: str = "new") -> int:
+                 only_status: str = "new", user_id: int = DEFAULT_USER_ID) -> int:
     """Bulk archive. By age (jobs not seen in N days) and/or by explicit id.
 
     Only jobs in `only_status` are touched by the age rule, so a shortlist is
@@ -469,38 +520,38 @@ def archive_jobs(*, older_than_days: int | None = None, ids: Iterable[int] | Non
     with connect() as conn:
         if older_than_days is not None:
             cur = conn.execute(
-                """INSERT INTO user_state (job_id, status, updated_at)
-                   SELECT j.id, 'archived', ? FROM jobs j
-                   LEFT JOIN user_state u ON u.job_id = j.id
+                """INSERT INTO user_state (job_id, user_id, status, updated_at)
+                   SELECT j.id, ?, 'archived', ? FROM jobs j
+                   LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                    WHERE COALESCE(u.status, 'new') = ?
                      AND datetime(j.last_seen) <= datetime('now', ?)
-                   ON CONFLICT(job_id) DO UPDATE SET
+                   ON CONFLICT(job_id, user_id) DO UPDATE SET
                      status = 'archived', updated_at = excluded.updated_at
                    WHERE user_state.status != 'archived'""",
-                (now, only_status, f"-{int(older_than_days)} days"),
+                (user_id, now, user_id, only_status, f"-{int(older_than_days)} days"),
             )
             changed += cur.rowcount
         for job_id in ids or []:
             cur = conn.execute(
-                """INSERT INTO user_state (job_id, status, updated_at)
-                   SELECT id, 'archived', ? FROM jobs WHERE id = ?
-                   ON CONFLICT(job_id) DO UPDATE SET
+                """INSERT INTO user_state (job_id, user_id, status, updated_at)
+                   SELECT id, ?, 'archived', ? FROM jobs WHERE id = ?
+                   ON CONFLICT(job_id, user_id) DO UPDATE SET
                      status = 'archived', updated_at = excluded.updated_at
                    WHERE user_state.status != 'archived'""",
-                (now, int(job_id)),
+                (user_id, now, int(job_id)),
             )
             changed += cur.rowcount
     return changed
 
 
-def facets() -> dict[str, Any]:
+def facets(user_id: int = DEFAULT_USER_ID) -> dict[str, Any]:
     """Distinct values the UI offers as filters, with counts."""
     with connect() as conn:
         by_status = {
             r["status"]: r["n"] for r in conn.execute(
                 """SELECT COALESCE(u.status,'new') AS status, COUNT(*) AS n
-                   FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id
-                   GROUP BY 1 ORDER BY 1"""
+                   FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
+                   GROUP BY 1 ORDER BY 1""", (user_id,)
             )
         }
         by_source = {
@@ -694,27 +745,27 @@ def reset_everything() -> dict[str, int]:
     return counts
 
 
-def stale_score_count(criteria_hash: str) -> int:
-    """Jobs whose only scores predate the current criteria: re-scored next scan."""
+def stale_score_count(criteria_hash: str, user_id: int = DEFAULT_USER_ID) -> int:
+    """This user's jobs whose only scores predate the current criteria."""
     with connect() as conn:
         return conn.execute(
             """SELECT COUNT(*) FROM jobs j
-               WHERE EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id)
-                 AND NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.criteria_hash = ?)""",
-            (criteria_hash,),
+               WHERE EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.user_id = ?)
+                 AND NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.user_id = ? AND e.criteria_hash = ?)""",
+            (user_id, user_id, criteria_hash),
         ).fetchone()[0]
 
 
-def stats() -> dict[str, Any]:
+def stats(user_id: int = DEFAULT_USER_ID) -> dict[str, Any]:
     with connect() as conn:
         q = lambda s, *p: conn.execute(s, p).fetchone()[0]  # noqa: E731
         return {
             "jobs": q("SELECT COUNT(*) FROM jobs"),
-            "evaluated": q("SELECT COUNT(DISTINCT job_id) FROM evaluations"),
-            "shortlisted": q("SELECT COUNT(*) FROM user_state WHERE status='shortlisted'"),
-            "applied": q("SELECT COUNT(*) FROM user_state WHERE status='applied'"),
-            "dismissed": q("SELECT COUNT(*) FROM user_state WHERE status='dismissed'"),
-            "archived": q("SELECT COUNT(*) FROM user_state WHERE status='archived'"),
+            "evaluated": q("SELECT COUNT(DISTINCT job_id) FROM evaluations WHERE user_id = ?", user_id),
+            "shortlisted": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='shortlisted'", user_id),
+            "applied": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='applied'", user_id),
+            "dismissed": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='dismissed'", user_id),
+            "archived": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='archived'", user_id),
             "sources": q("SELECT COUNT(*) FROM sources WHERE enabled=1"),
             "discovered_sources": q("SELECT COUNT(*) FROM sources WHERE origin='discovered'"),
             "runs": q("SELECT COUNT(*) FROM runs"),

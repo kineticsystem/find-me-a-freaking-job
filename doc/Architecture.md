@@ -119,13 +119,15 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 | Table | Holds |
 |---|---|
 | `jobs` | One row per posting, unique on `fingerprint` = normalised company + title + location, so the same job on three boards collapses to one row. `first_seen`, `last_seen`, `seen_count` track its lifetime. |
-| `evaluations` | One row per (job, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
+| `evaluations` | One row per (job, user, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
 | `users` | One row per user. Until login exists, only the default user (id 1), created by `init_db`. |
 | `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
-| `user_state` | Your decisions: `new`, `shortlisted`, `applied`, `dismissed`, `archived`, plus notes. Separate from `evaluations` on purpose — a re-run never touches it. |
+| `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
 | `discovery_log` | What discovery has already tried or seen. |
+
+**Per user.** Every query over scores and decisions takes a `user_id` (default: the single default user, until login exists). Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
 
 **Criteria hash.** Every evaluation is stamped with `sha256(profile_digest_hash | preferences_hash)`. A job "needs evaluation" when it has no row for the current hash. So editing the CV, the notes or `preferences.yaml` automatically makes every job eligible for re-scoring on the next run, and the old scores remain queryable.
 

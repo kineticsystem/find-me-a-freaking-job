@@ -2,7 +2,7 @@
 
 Working notes for the `multi-users` branch. A discussion document, kept current as decisions are made; nothing here is implemented until it says so.
 
-**Implemented so far:** Decision 1 (preferences in the database, `users` table with the default user, one-time import of the YAML file).
+**Implemented so far:** Decision 1 (preferences in the database, `users` table with the default user, one-time import of the YAML file); `user_id` on `evaluations` and `user_state` (key `(job_id, user_id)`), every query per user, defaulting to user 1 until there is a session; old databases rebuilt in place with every row becoming user 1's.
 
 ## Goal
 
@@ -17,8 +17,8 @@ Today several things are singletons — one file, one folder, one row. Per user,
 | `config/preferences.yaml` | `user_preferences` row | |
 | `profile/notes.md` | `user_notes` row | |
 | `profile/cv.*` + `.cache/profile.json` | `user_cv` (file or blob) + digest row | |
-| `user_state` (shortlisted / applied / dismissed + reason) | gains `user_id` | |
-| `evaluations` (scores) | gains `user_id`: a score is a (job, user, criteria) fact | |
+| `user_state` (shortlisted / applied / dismissed + reason) | keyed by `(job_id, user_id)` — done | |
+| `evaluations` (scores) | `user_id` column: a score is a (job, user, criteria) fact — done | |
 | criteria hash | computed per user from their preferences + CV digest | |
 | `jobs` | | shared: a posting is the same for everyone |
 | `sources` registry (what a source is, how to fetch it, its health) | `user_sources` overlay: who follows it | the registry row is shared |
@@ -83,7 +83,7 @@ Storage stays shared: a posting is stored once and each user's slice is a query 
 2. **The CV.** File on disk under `profile/<user_id>/` or a blob in the database. Files are simpler for the PDF parser and for size; the digest cache becomes a row either way. Not decided.
 3. **The scan.** Decided: see Decision 3.
 4. **Sources.** Decided: see Decision 2. Open detail: whether a user can *remove* a registry row (only if nobody else follows it) or only unfollow.
-5. **Rejections block and stale scores.** Already keyed by user once `user_state` and `evaluations` carry `user_id`; no new design needed.
+5. **Rejections block and stale scores.** Done: keyed by user through `user_state` and `evaluations`.
 6. **Migration of the current single-user data.** On first start of the multi-user version, create user 1 from the existing files and rows so nothing is lost. Needed.
 7. **The web app.** A login screen; everything else stays as it is, scoped by the session's user.
 
