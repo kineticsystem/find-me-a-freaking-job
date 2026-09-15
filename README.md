@@ -128,6 +128,8 @@ The server you started in step 3 is the long-running process. It runs the search
 
 **http://127.0.0.1:8099/**
 
+The first visit asks you to create your account — an email and a password — and that account is the admin, owning everything already in the database. After that it is a login screen. Nothing is stored that could give your password away: the database keeps a hash of it, and a hash of each login token, so a stolen `data/jobs.db` yields neither. If you prefer the terminal, `./docker/dock.sh jobfinder shell -c 'jobfinder.sh create-user you@example.com'` does the same.
+
 The app follows your device's light or dark theme; ⚙ → *Appearance* forces Light or Dark, remembered per browser. Search, filter by status / remote type / source / minimum score, sort by best match, newest or company. On each job: **Shortlist**, then **Applied**; **Not for me** when it is wrong for you; **Archive** to get it out of the way; **Delete** for junk. **Archive older than N days** clears out stale postings in one click without touching anything you shortlisted. **Scan now** triggers a search immediately; while a scan runs, a progress bar under the button shows the stage, how far through it is, and a time estimate, and the button becomes **Stop scan**. Stopping is safe: everything scored so far is kept, and the next scan carries on from there — postings are never stored twice, and only postings without a score get scored.
 
 **Not for me** asks why — tap a chip or two (*salary too low*, *on-site*, *agency / consultancy*, *wrong stack*…) and optionally a few words — and that is the one action that teaches the system. The reasons for your recent dismissals are shown to the model every time it scores a posting, as guidance about your taste, so the same kind of job stops scoring well. Archive carries no such signal: it just means "done with this one".
@@ -138,7 +140,7 @@ Job postings expire, and the archive-by-age feature exists for that reason: the 
 
 The container listens on every interface: open `http://<this machine's IP>:8099/` from any device on your network.
 
-For access from outside your network, put it behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [Tailscale](https://tailscale.com) rather than forwarding the port: the API has no login, and it can delete.
+For access from outside your network, put it behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [Tailscale](https://tailscale.com) rather than forwarding the port. The app has its own login, but a tunnel adds encryption and keeps the port itself off the internet.
 
 ### Cloudflare Tunnel
 
@@ -158,7 +160,13 @@ cloudflared tunnel run --url http://localhost:8099 jobs
 sudo cloudflared service install                       # run it as a system service from now on
 ```
 
-Then in the Cloudflare dashboard, Zero Trust → Access → Applications, add `jobs.yourdomain.com` with a policy that allows your email. That puts a one-time-code login in front of the app, which it does not have on its own.
+Optionally, in the Cloudflare dashboard, Zero Trust → Access → Applications, add `jobs.yourdomain.com` with a policy that allows your email: a one-time-code check in front of the app's own login.
+
+### More than one person
+
+The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own preferences, shortlist, applied list and dismissals; the postings are shared, and so are — for now — the CV, the notes, the sources and the scan itself, which only the admin controls. Per-user CVs and scans are the next step (see `multiuser-plan.md`).
+
+A forgotten password cannot be recovered, only replaced: the admin sets a new one from *Users*, which logs that person out everywhere.
 
 ### Keeping it running
 

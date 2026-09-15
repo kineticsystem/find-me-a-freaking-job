@@ -8,13 +8,14 @@ import re
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, discovery, opencode, scheduler
+from . import auth, db, discovery, opencode, scheduler
+from .auth import AdminUser, CurrentUser
 from . import config as config_mod
 from .config import ROOT, Preferences, preferences, settings, write_top_level_setting
 from .config import reload as reload_config
@@ -47,6 +48,14 @@ app.add_middleware(
 )
 
 
+# /health and /auth/login are the only routes without a token. Per-user
+# routes read the user from the token; routes that touch the shared
+# installation (settings, profile files, sources, scans, resets) are admin
+# only until those become per user too.
+user_api = APIRouter(dependencies=[Depends(auth.current_user)])
+admin_api = APIRouter(dependencies=[Depends(auth.admin_user)])
+
+
 def _decode_lists(job: dict[str, Any]) -> dict[str, Any]:
     """List fields are stored as JSON text and are NULL before any evaluation;
     the client always receives a list."""
@@ -69,6 +78,7 @@ def health() -> dict[str, Any]:
     criteria = criteria_mod.current_criteria_hash()
     return {
         "ok": True,
+        "needs_setup": not db.any_user_can_login(),  # no account yet: the UI shows the first-user screen
         "setup": prof.readiness(),
         "running": run_mod.is_running(),
         "progress": progress.snapshot(),
@@ -81,7 +91,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.get("/jobs")
+@user_api.get("/jobs")
 def list_jobs(
     min_score: int = Query(0, ge=0, le=100),
     status: str | None = None,
@@ -92,6 +102,7 @@ def list_jobs(
     sort: Literal["score", "newest", "company"] = "score",
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    user: CurrentUser = None,
 ) -> dict[str, Any]:
     """Paged job list: the active jobs, or with hidden=true only the archived and dismissed ones."""
     if status and status not in STATUSES:
@@ -100,7 +111,7 @@ def list_jobs(
         raise HTTPException(400, "remote must be one of remote|hybrid|onsite|unknown")
     rows, total = db.list_jobs(
         min_score=min_score, status=status, source=source, remote=remote, query=q,
-        hidden=hidden, sort=sort, limit=limit, offset=offset,
+        hidden=hidden, sort=sort, limit=limit, offset=offset, user_id=user["id"],
     )
     return {
         "count": len(rows), "total": total, "offset": offset, "limit": limit,
@@ -108,10 +119,10 @@ def list_jobs(
     }
 
 
-@app.get("/jobs/facets")
-def job_facets() -> dict[str, Any]:
+@user_api.get("/jobs/facets")
+def job_facets(user: CurrentUser) -> dict[str, Any]:
     """Filter options with counts: statuses, sources, remote types."""
-    return db.facets()
+    return db.facets(user_id=user["id"])
 
 
 class ArchiveRequest(BaseModel):
@@ -119,17 +130,17 @@ class ArchiveRequest(BaseModel):
     ids: list[int] = Field(default_factory=list, description="archive these jobs regardless of age")
 
 
-@app.post("/jobs/archive")
-def archive_jobs(body: ArchiveRequest) -> dict[str, Any]:
+@user_api.post("/jobs/archive")
+def archive_jobs(body: ArchiveRequest, user: CurrentUser) -> dict[str, Any]:
     if body.older_than_days is None and not body.ids:
         raise HTTPException(400, "give older_than_days, ids, or both")
-    changed = db.archive_jobs(older_than_days=body.older_than_days, ids=body.ids)
+    changed = db.archive_jobs(older_than_days=body.older_than_days, ids=body.ids, user_id=user["id"])
     return {"ok": True, "archived": changed}
 
 
-@app.get("/jobs/{job_id}")
-def get_job(job_id: int) -> dict[str, Any]:
-    job = db.get_job(job_id)
+@user_api.get("/jobs/{job_id}")
+def get_job(job_id: int, user: CurrentUser) -> dict[str, Any]:
+    job = db.get_job(job_id, user_id=user["id"])
     if not job:
         raise HTTPException(404, "no such job")
     return _decode_lists(job)
@@ -143,20 +154,20 @@ class StateUpdate(BaseModel):
     reason: str | None = Field(None, max_length=300)
 
 
-@app.patch("/jobs/{job_id}/state")
-def set_state(job_id: int, body: StateUpdate) -> dict[str, Any]:
-    if not db.set_user_state(job_id, body.status, body.notes, body.reason):
+@user_api.patch("/jobs/{job_id}/state")
+def set_state(job_id: int, body: StateUpdate, user: CurrentUser) -> dict[str, Any]:
+    if not db.set_user_state(job_id, body.status, body.notes, body.reason, user_id=user["id"]):
         raise HTTPException(404, "no such job")
     return {"ok": True, "job_id": job_id, "status": body.status}
 
 
-@app.get("/rejections")
-def rejections(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+@user_api.get("/rejections")
+def rejections(user: CurrentUser, limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
     """What the model is currently told the candidate turned down, and why."""
-    return {"rejections": db.recent_rejections(limit)}
+    return {"rejections": db.recent_rejections(limit, user_id=user["id"])}
 
 
-@app.delete("/jobs/{job_id}")
+@user_api.delete("/jobs/{job_id}")
 def delete_job(job_id: int) -> dict[str, Any]:
     """Permanent. Prefer archiving; this is for junk that should never resurface."""
     if not db.delete_job(job_id):
@@ -164,12 +175,12 @@ def delete_job(job_id: int) -> dict[str, Any]:
     return {"ok": True, "deleted": job_id}
 
 
-@app.get("/runs")
+@admin_api.get("/runs")
 def list_runs(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
     return {"runs": db.list_runs(limit)}
 
 
-@app.post("/runs")
+@admin_api.post("/runs")
 def trigger_run() -> dict[str, Any]:
     from .pipeline import profile as prof
 
@@ -184,7 +195,7 @@ def trigger_run() -> dict[str, Any]:
     return {"ok": True, "queued": True}
 
 
-@app.post("/runs/stop")
+@admin_api.post("/runs/stop")
 def stop_run() -> dict[str, Any]:
     """Stop the running scan after its current unit; the in-flight model
     call is killed. Everything scored so far stays."""
@@ -195,7 +206,7 @@ def stop_run() -> dict[str, Any]:
     return {"ok": True, "stopping": True}
 
 
-@app.get("/digest", response_class=PlainTextResponse)
+@admin_api.get("/digest", response_class=PlainTextResponse)
 def latest_digest() -> str:
     path = settings().paths.resolve("runs") / "latest-digest.md"
     if not path.exists():
@@ -203,7 +214,7 @@ def latest_digest() -> str:
     return path.read_text()
 
 
-@app.get("/sources")
+@admin_api.get("/sources")
 def list_sources() -> dict[str, Any]:
     """Every source with what it has produced. `jobs_stored` is what is in the
     database right now from it; `jobs_found` is the running total fetched."""
@@ -242,7 +253,7 @@ def _register_board(stype: str, slug: str, url: str, how: str) -> dict[str, Any]
             "how": how, "note": "its postings will be fetched on the next scan"}
 
 
-@app.post("/sources")
+@admin_api.post("/sources")
 def add_source(body: SourceAdd) -> dict[str, Any]:
     """Register a company from its careers URL.
 
@@ -286,14 +297,14 @@ def add_source(body: SourceAdd) -> dict[str, Any]:
             "note": "its postings will be extracted on the next scan"}
 
 
-@app.post("/sources/{source_id}/enabled")
+@admin_api.post("/sources/{source_id}/enabled")
 def toggle_source(source_id: str, enabled: bool = True) -> dict[str, Any]:
     if not db.set_source_enabled(source_id, enabled):
         raise HTTPException(404, "no such source")
     return {"ok": True, "source_id": source_id, "enabled": enabled}
 
 
-@app.delete("/sources/{source_id}")
+@admin_api.delete("/sources/{source_id}")
 def remove_source(source_id: str) -> dict[str, Any]:
     src = db.get_source(source_id)
     if not src:
@@ -309,7 +320,7 @@ class SettingsUpdate(BaseModel):
     run_on_start: bool | None = None
 
 
-@app.get("/settings")
+@admin_api.get("/settings")
 def get_settings() -> dict[str, Any]:
     """The settings the UI can change, plus scheduler state."""
     cfg = settings()
@@ -321,7 +332,7 @@ def get_settings() -> dict[str, Any]:
     }
 
 
-@app.patch("/settings")
+@admin_api.patch("/settings")
 def update_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
     """Persist to config/settings.yaml and apply live: no restart needed."""
     if body.interval_minutes is None and body.run_on_start is None:
@@ -344,14 +355,14 @@ def update_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # profile: the CV and the notes, editable from the UI
 # --------------------------------------------------------------------------
-@app.get("/profile")
+@admin_api.get("/profile")
 def get_profile() -> dict[str, Any]:
     from .pipeline import profile as prof
 
     return prof.profile_status()
 
 
-@app.post("/profile/cv")
+@admin_api.post("/profile/cv")
 async def upload_cv(file: UploadFile = File(...)) -> dict[str, Any]:
     """Replace the CV. Saved as profile/cv.<ext>; any previous CV is removed.
     The profile digest is rebuilt and every job re-scored on the next run."""
@@ -372,7 +383,7 @@ class NotesUpdate(BaseModel):
     text: str = Field(..., max_length=20000)
 
 
-@app.put("/profile/notes")
+@admin_api.put("/profile/notes")
 def update_notes(body: NotesUpdate) -> dict[str, Any]:
     from .pipeline import profile as prof
 
@@ -394,7 +405,7 @@ def _require_confirmation(body: ResetRequest) -> None:
         raise HTTPException(409, "a scan is running; wait for it to finish, then try again")
 
 
-@app.post("/reset/jobs")
+@admin_api.post("/reset/jobs")
 def reset_jobs(body: ResetRequest) -> dict[str, Any]:
     """Delete every job, score, decision and run. Sources and your profile stay."""
     _require_confirmation(body)
@@ -403,7 +414,7 @@ def reset_jobs(body: ResetRequest) -> dict[str, Any]:
     return {"ok": True, "deleted": deleted}
 
 
-@app.post("/reset/all")
+@admin_api.post("/reset/all")
 def reset_all(body: ResetRequest) -> dict[str, Any]:
     """Delete everything in the database, sources included. Files (CV, notes,
     preferences) are untouched; the seed sources come back from config."""
@@ -414,22 +425,22 @@ def reset_all(body: ResetRequest) -> dict[str, Any]:
     return {"ok": True, "deleted": deleted, "sources_reseeded": len(db.list_sources())}
 
 
-@app.get("/preferences")
-def get_preferences() -> dict[str, Any]:
+@user_api.get("/preferences")
+def get_preferences(user: CurrentUser) -> dict[str, Any]:
     """The current user's preferences document (one per user, in the database)."""
-    return {"preferences": preferences().model_dump(), "user_id": config_mod.DEFAULT_USER_ID}
+    return {"preferences": preferences(user["id"]).model_dump(), "user_id": user["id"]}
 
 
-@app.put("/preferences")
-def put_preferences(body: Preferences) -> dict[str, Any]:
+@user_api.put("/preferences")
+def put_preferences(body: Preferences, user: CurrentUser) -> dict[str, Any]:
     """Save from the form. Validated by the same model the pipeline reads;
     location_rules order becomes the market priority. Re-scores everything on
     the next scan through the criteria hash."""
-    config_mod.save_preferences(body.normalised())
-    return get_preferences()
+    config_mod.save_preferences(body.normalised(), user_id=user["id"])
+    return get_preferences(user)
 
 
-@app.post("/reload")
+@admin_api.post("/reload")
 def reload() -> dict[str, Any]:
     """Pick up edited YAML without restarting; re-seeds sources. A broken
     file is reported and the previous values stay in force."""
@@ -439,6 +450,114 @@ def reload() -> dict[str, Any]:
         raise HTTPException(400, exc.message) from exc
     added = discovery.seed_from_config()
     return {"ok": True, "new_sources": added, "criteria": criteria_mod.current_criteria_hash()}
+
+
+# --------------------------------------------------------------------------
+# Login and accounts
+# --------------------------------------------------------------------------
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+    password: str = Field(..., min_length=1, max_length=1000)
+    device: str = Field("", max_length=100, description="label for this token, e.g. the browser")
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginRequest) -> dict[str, Any]:
+    """Email + password → a bearer token, shown once. Send it as
+    ``Authorization: Bearer <token>`` on every other request."""
+    result = auth.login(body.email, body.password, name=body.device)
+    if not result:
+        raise HTTPException(401, "wrong email or password")
+    return result
+
+
+@user_api.post("/auth/logout")
+def auth_logout(user: CurrentUser, everywhere: bool = False) -> dict[str, Any]:
+    """Revokes this token; with everywhere=true every token of the user."""
+    if everywhere:
+        db.delete_user_tokens(user["id"])
+    else:
+        db.delete_token(user["token_id"])
+    return {"ok": True}
+
+
+@user_api.get("/auth/me")
+def auth_me(user: CurrentUser) -> dict[str, Any]:
+    return {k: v for k, v in user.items() if k != "token_id"}
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=1000)
+
+
+@user_api.put("/auth/password")
+def auth_change_password(body: PasswordChange, user: CurrentUser) -> dict[str, Any]:
+    """Changing the password logs out every other device; this one stays."""
+    if not auth.check_password(user["id"], body.current_password):
+        raise HTTPException(401, "wrong current password")
+    db.set_password_hash(user["id"], auth.hash_password(body.new_password))
+    db.delete_user_tokens(user["id"], keep=user["token_id"])
+    return {"ok": True}
+
+
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200, pattern=r"^[^@\s]+@[^@\s]+$")
+    password: str = Field(..., min_length=8, max_length=1000)
+    is_admin: bool = False
+
+
+@app.post("/auth/setup")
+def auth_setup(body: UserCreate) -> dict[str, Any]:
+    """First account only, open while nobody can log in: claims the pre-login
+    default user, so everything already in the database becomes this
+    person's. Refused (409) once any account exists."""
+    if db.any_user_can_login():
+        raise HTTPException(409, "an account already exists; ask the admin")
+    if db.get_user_by_email(body.email) and db.get_user_by_email(body.email)["id"] != config_mod.DEFAULT_USER_ID:
+        raise HTTPException(409, "that email is taken")
+    db.claim_user(config_mod.DEFAULT_USER_ID, body.email, auth.hash_password(body.password), is_admin=True)
+    return auth.login(body.email, body.password, name="first login") or {}
+
+
+@admin_api.get("/users")
+def list_users() -> dict[str, Any]:
+    return {"users": db.list_users()}
+
+
+@admin_api.post("/users")
+def create_user(body: UserCreate) -> dict[str, Any]:
+    if db.get_user_by_email(body.email):
+        raise HTTPException(409, "that email is taken")
+    uid = db.create_user(body.email, auth.hash_password(body.password), is_admin=body.is_admin)
+    return {"ok": True, "user": db.get_user(uid)}
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(..., min_length=8, max_length=1000)
+
+
+@admin_api.put("/users/{user_id}/password")
+def reset_user_password(user_id: int, body: PasswordReset) -> dict[str, Any]:
+    """Admin sets a new password for someone who forgot theirs; their tokens are revoked."""
+    if not db.set_password_hash(user_id, auth.hash_password(body.password)):
+        raise HTTPException(404, "no such user")
+    db.delete_user_tokens(user_id)
+    return {"ok": True}
+
+
+@admin_api.delete("/users/{user_id}")
+def delete_user(user_id: int, admin: AdminUser) -> dict[str, Any]:
+    """Removes the account with its tokens, decisions, scores and preferences."""
+    if user_id == admin["id"]:
+        raise HTTPException(400, "you cannot delete yourself")
+    if not db.delete_user(user_id):
+        raise HTTPException(404, "no such user")
+    return {"ok": True, "deleted": user_id}
+
+
+app.include_router(user_api)
+app.include_router(admin_api)
 
 
 # --------------------------------------------------------------------------

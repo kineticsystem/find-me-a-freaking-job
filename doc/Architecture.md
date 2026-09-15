@@ -120,14 +120,15 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 |---|---|
 | `jobs` | One row per posting, unique on `fingerprint` = normalised company + title + location, so the same job on three boards collapses to one row. `first_seen`, `last_seen`, `seen_count` track its lifetime. |
 | `evaluations` | One row per (job, user, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
-| `users` | One row per user. Until login exists, only the default user (id 1), created by `init_db`. |
+| `users` | One row per user: `email` (unique), `password_hash` (Argon2id via `pwdlib`; never the password), `is_admin`. `init_db` creates user 1, who becomes the admin the moment an account is created, so a single-user database becomes that person's on first login. |
+| `api_tokens` | Login sessions and, later, personal access tokens: `user_id`, `token_hash` (SHA-256 of the token — the token itself is shown once and never stored), `name`, `created_at`, `expires_at`, `last_used_at`. One row per device; a logout is one DELETE, "everywhere" is one DELETE by user. |
 | `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
 | `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
 | `discovery_log` | What discovery has already tried or seen. |
 
-**Per user.** Every query over scores and decisions takes a `user_id` (default: the single default user, until login exists). Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
+**Per user.** Every query over scores and decisions takes a `user_id`, supplied by the API from the bearer token. Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
 
 **Criteria hash.** Every evaluation is stamped with `sha256(profile_digest_hash | preferences_hash)`. A job "needs evaluation" when it has no row for the current hash. So editing the CV, the notes or `preferences.yaml` automatically makes every job eligible for re-scoring on the next run, and the old scores remain queryable.
 
@@ -149,8 +150,14 @@ Three files are the user's own and never belong in the repository: `config/setti
 
 FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.py`). The scheduler fires `run_once` on an interval with `max_instances=1` and `coalesce=True`: a run that outlasts the interval is never stacked, and missed ticks collapse into one. A process-wide lock makes a manual `POST /runs` and a scheduled tick mutually exclusive.
 
+**Login** (`jobfinder/auth.py`). Every route except `/health`, `/auth/login` and `/auth/setup` requires `Authorization: Bearer <token>`; a missing or unknown token is 401. The token is 32 random bytes from `secrets`, returned once by `POST /auth/login` and kept by the web app in `localStorage`; the database stores only its SHA-256, looked up per request (`api_tokens`), with a 30-day expiry. It is never accepted in a query string: a URL token leaks into access logs, browser history and the `Referer` of every Apply link. Passwords are hashed with Argon2id (`pwdlib`); a login with an unknown email still runs a hash verification so the response time does not reveal which emails exist, and both failures return the same 401. Routes that change the shared installation — settings, profile files, sources, scans, resets, reload, accounts — take an admin token (403 otherwise); per-user routes read the user from the token. `POST /auth/setup` works only while no account can log in: it claims user 1, so existing data becomes the first person's. A user can change their own password (`PUT /auth/password`, other devices logged out); the admin can replace anyone's (`PUT /users/{id}/password`, all their devices logged out), add (`POST /users`) and remove accounts (`DELETE /users/{id}`, cascading to their tokens, decisions, scores and preferences; jobs stay).
+
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/auth/login` · `/auth/setup` | email + password → `{token, expires_at, user}`; setup is the first account only (409 afterwards) |
+| POST | `/auth/logout` | revokes this token; `?everywhere=true` every token of the user |
+| GET | `/auth/me` · PUT `/auth/password` | who the token belongs to · change own password |
+| GET / POST | `/users` · PUT `/users/{id}/password` · DELETE `/users/{id}` | admin: list, add, reset a password, remove |
 | GET | `/health` | scheduler state, next run, set-up checklist, live scan progress (`pipeline/progress.py`: stage, units done of total, an ETA from the mean unit time so far), counts |
 | GET | `/jobs` | paged, ranked list; `q`, `status`, `remote`, `source`, `min_score`, `sort`, `include_archived`, `limit`, `offset`; returns `total` |
 | GET | `/jobs/facets` | filter options with counts |
@@ -178,6 +185,8 @@ When `web/dist/index.html` exists the same app mounts `/assets` and serves `inde
 ## Web UI
 
 `web/` — React 19, TypeScript, Vite, pnpm. No component library; the whole stylesheet is ~200 lines with light and dark from `prefers-color-scheme`.
+
+`App` is a gate: with no token, or a token the server no longer accepts (any 401 drops it), it renders `components/Login.tsx` — the first-account form when `/health` says `needs_setup`, the login form otherwise — and only then the workspace. `api.ts` adds the `Authorization` header to every request. Non-admins do not see the scan controls, the set-up checklist, or the Scanning, Profile, Sources, Users and Danger-zone sections of the settings panel; the server refuses them regardless.
 
 Three files carry the logic: `App.tsx` (query state, paging, actions, toasts), `components/JobCard.tsx`, `components/Filters.tsx`. `api.ts` is the typed client; `types.ts` mirrors the API contract.
 

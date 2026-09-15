@@ -81,8 +81,21 @@ export interface Progress {
   stopping?: boolean
 }
 
+export interface User {
+  id: number
+  name: string
+  email: string | null
+  is_admin: boolean
+  can_login: boolean
+  created_at: string
+  tokens?: number
+}
+
+export interface LoginResult { token: string; expires_at: string; user: User }
+
 export interface Health {
   ok: boolean
+  needs_setup: boolean
   progress: Progress
   stale_scores: number
   setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean }

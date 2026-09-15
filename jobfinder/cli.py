@@ -108,6 +108,37 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_create_user(args: argparse.Namespace) -> int:
+    """Admin's way in without the UI. The first account claims the pre-login
+    default user so existing decisions and scores are kept."""
+    import getpass
+
+    from . import auth
+    from .config import DEFAULT_USER_ID
+
+    db.init_db()
+    email = args.email.strip().lower()
+    if db.get_user_by_email(email):
+        print(f"{email} already exists", file=sys.stderr)
+        return 1
+    password = args.password or getpass.getpass("password: ")
+    if len(password) < 8:
+        print("password must be at least 8 characters", file=sys.stderr)
+        return 1
+    if not args.password and password != getpass.getpass("again: "):
+        print("passwords differ", file=sys.stderr)
+        return 1
+    first = not db.any_user_can_login()
+    if first:
+        db.claim_user(DEFAULT_USER_ID, email, auth.hash_password(password), is_admin=True)
+        uid = DEFAULT_USER_ID
+    else:
+        uid = db.create_user(email, auth.hash_password(password), is_admin=args.admin)
+    role = "admin" if (first or args.admin) else "user"
+    print(f"created {role} {email} (id {uid})" + (" — owns the existing data" if first else ""))
+    return 0
+
+
 def cmd_clean_descriptions(args: argparse.Namespace) -> int:
     """Re-run the HTML stripper over stored descriptions (after a fix to it)."""
     from .textutil import html_to_text
@@ -181,7 +212,13 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
                                          eligibility="Demo: eligible.", salary=job.salary_raw, tech_stack=["Python", "C++"],
                                          concerns=["demo data"], rationale="demo")
     db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
-    print(f"seeded {n} fictional postings under criteria {criteria}")
+    # Accounts for the browser suite: the admin owns the seeded scores.
+    from . import auth
+    from .config import DEFAULT_USER_ID
+    if not db.any_user_can_login():
+        db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("demo-admin-password"), is_admin=True)
+        db.create_user("user@example.com", auth.hash_password("demo-user-password"))
+    print(f"seeded {n} fictional postings under criteria {criteria}; accounts admin@example.com / user@example.com")
     return 0
 
 
@@ -238,6 +275,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check the environment").set_defaults(func=cmd_doctor)
     sub.add_parser("check", help="validate the config files; exit 2 with the reason if not").set_defaults(func=cmd_check)
     sub.add_parser("seed-demo", help="fill an empty database with fictional postings (for a test instance)").set_defaults(func=cmd_seed_demo)
+    user = sub.add_parser("create-user", help="add an account (the first one becomes the admin and owns existing data)")
+    user.add_argument("email")
+    user.add_argument("--admin", action="store_true")
+    user.add_argument("--password", help="for scripts; interactive prompt otherwise")
+    user.set_defaults(func=cmd_create_user)
     sub.add_parser("clean-descriptions", help="re-strip HTML from stored job descriptions").set_defaults(func=cmd_clean_descriptions)
     return p
 

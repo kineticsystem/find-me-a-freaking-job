@@ -19,9 +19,26 @@ SCHEMA = """
 -- Users. Until login exists there is exactly one, the default user (id 1),
 -- created by init_db. Everything per-user hangs off this id from now on.
 CREATE TABLE IF NOT EXISTS users (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL,
+    email         TEXT,                        -- unique (index below); NULL until the account is set up
+    password_hash TEXT,                        -- Argon2id hash, never the password; NULL = cannot log in
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Bearer tokens. Only the SHA-256 of the token is stored; the token itself is
+-- shown once at login and never kept, so a stolen database yields no usable
+-- token. One row per device or script; deleting a row logs that one out.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           INTEGER PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    name         TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    last_used_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -152,6 +169,9 @@ def connect() -> Iterator[sqlite3.Connection]:
 # Columns added after the first release; applied to databases that predate them.
 MIGRATIONS = [
     ("user_state", "reason", "ALTER TABLE user_state ADD COLUMN reason TEXT"),
+    ("users", "email", "ALTER TABLE users ADD COLUMN email TEXT"),
+    ("users", "password_hash", "ALTER TABLE users ADD COLUMN password_hash TEXT"),
+    ("users", "is_admin", "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -225,6 +245,122 @@ def init_db() -> None:
                 conn.execute(ddl)
         _migrate_per_user(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_user ON evaluations(user_id, job_id, stage)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        # The pre-login default user owns all existing data; it becomes the admin.
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (DEFAULT_USER_ID,))
+
+
+# --------------------------------------------------------------------------
+# users and tokens
+# --------------------------------------------------------------------------
+def _user(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    d = dict(row)
+    d["is_admin"] = bool(d.get("is_admin"))
+    d["can_login"] = bool(d.get("password_hash"))
+    d.pop("password_hash", None)
+    return d
+
+
+def get_user(user_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        return _user(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        return _user(conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone())
+
+
+def get_password_hash(email: str | None = None, *, user_id: int | None = None) -> tuple[int, str] | None:
+    with connect() as conn:
+        if user_id is not None:
+            row = conn.execute("SELECT id, password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT id, password_hash FROM users WHERE email = ?", ((email or "").strip().lower(),)).fetchone()
+    return (int(row["id"]), row["password_hash"]) if row and row["password_hash"] else None
+
+
+def list_users() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT u.*, (SELECT COUNT(*) FROM api_tokens t WHERE t.user_id = u.id) AS tokens
+               FROM users u ORDER BY u.id"""
+        ).fetchall()
+    return [_user(r) for r in rows]
+
+
+def any_user_can_login() -> bool:
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").fetchone() is not None
+
+
+def create_user(email: str, password_hash: str, *, name: str = "", is_admin: bool = False) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (name, email, password_hash, is_admin, created_at) VALUES (?,?,?,?,?)",
+            (name or email.split("@")[0], email.strip().lower(), password_hash, int(is_admin), utcnow()),
+        )
+        return int(cur.lastrowid)
+
+
+def claim_user(user_id: int, email: str, password_hash: str, *, is_admin: bool) -> None:
+    """Give an existing account (the pre-login default user) an email and a
+    password, so its data becomes somebody's."""
+    with connect() as conn:
+        conn.execute("UPDATE users SET email = ?, password_hash = ?, is_admin = ?, name = ? WHERE id = ?",
+                     (email.strip().lower(), password_hash, int(is_admin), email.split("@")[0], user_id))
+
+
+def set_password_hash(user_id: int, password_hash: str) -> bool:
+    with connect() as conn:
+        return conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)).rowcount > 0
+
+
+def delete_user(user_id: int) -> bool:
+    """Removes the user and, by cascade, their tokens, decisions, scores and
+    preferences. Jobs are shared and stay."""
+    with connect() as conn:
+        return conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount > 0
+
+
+def create_token(user_id: int, token_hash: str, name: str = "", expires_at: str | None = None) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO api_tokens (user_id, token_hash, name, created_at, expires_at) VALUES (?,?,?,?,?)",
+            (user_id, token_hash, name, utcnow(), expires_at),
+        )
+        return int(cur.lastrowid)
+
+
+def resolve_token(token_hash: str) -> dict[str, Any] | None:
+    """The user a valid token belongs to, or None. Touches last_used_at."""
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT u.*, t.id AS token_id, t.expires_at FROM api_tokens t JOIN users u ON u.id = t.user_id
+               WHERE t.token_hash = ?""", (token_hash,)
+        ).fetchone()
+        if not row:
+            return None
+        if row["expires_at"] and row["expires_at"] < utcnow():
+            conn.execute("DELETE FROM api_tokens WHERE id = ?", (row["token_id"],))
+            return None
+        conn.execute("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (utcnow(), row["token_id"]))
+        user = _user(row)
+        assert user is not None
+        user["token_id"] = int(row["token_id"])
+        return user
+
+
+def delete_token(token_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+
+
+def delete_user_tokens(user_id: int, keep: int | None = None) -> int:
+    with connect() as conn:
+        return conn.execute("DELETE FROM api_tokens WHERE user_id = ? AND id IS NOT ?", (user_id, keep)).rowcount
 
 
 # --------------------------------------------------------------------------

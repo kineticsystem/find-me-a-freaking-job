@@ -1,4 +1,4 @@
-import type { Facets, Health, Job, JobPage, JobQuery, Preferences, Profile, Settings, Source, Status } from './types'
+import type { Facets, Health, Job, JobPage, JobQuery, LoginResult, Preferences, Profile, Settings, Source, Status, User } from './types'
 
 const PAGE_SIZE = 30
 
@@ -10,11 +10,38 @@ class ApiError extends Error {
   }
 }
 
+// The bearer token lives in localStorage and travels only in the
+// Authorization header — never in a URL. A 401 anywhere means it is gone
+// (logged out elsewhere, expired, revoked): the app drops it and shows the
+// login screen.
+const TOKEN_KEY = 'jobfinder.token'
+let onUnauthorized: (() => void) | null = null
+export const setUnauthorizedHandler = (fn: (() => void) | null) => { onUnauthorized = fn }
+
+export function getToken(): string | null {
+  try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
+}
+export function setToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch { /* private mode */ }
+}
+
+export function authHeaders(): Record<string, string> {
+  const t = getToken()
+  return t ? { authorization: `Bearer ${t}` } : {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'content-type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   })
+  if (res.status === 401 && getToken() && !path.startsWith('/auth/login')) {
+    setToken(null)
+    onUnauthorized?.()
+  }
   if (!res.ok) {
     let detail = res.statusText
     try {
@@ -80,7 +107,7 @@ export async function uploadCv(file: File): Promise<Profile & { saved: string }>
   const body = new FormData()
   body.append('file', file, file.name)
   // no content-type header: the browser sets the multipart boundary itself
-  const res = await fetch('/profile/cv', { method: 'POST', body })
+  const res = await fetch('/profile/cv', { method: 'POST', body, headers: authHeaders() })
   if (!res.ok) {
     let detail = res.statusText
     try { const j = (await res.json()) as { detail?: unknown }; if (typeof j.detail === 'string') detail = j.detail } catch { /* not JSON */ }
@@ -112,3 +139,24 @@ export const stopRun = () => request<{ ok: true }>('/runs/stop', { method: 'POST
 export const triggerRun = () => request<{ ok: true }>('/runs', { method: 'POST' })
 
 export { ApiError, PAGE_SIZE }
+
+// --- accounts ---------------------------------------------------------------
+export const login = (email: string, password: string) =>
+  request<LoginResult>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, device: navigator.userAgent.slice(0, 100) }),
+  })
+export const setupFirstUser = (email: string, password: string) =>
+  request<LoginResult>('/auth/setup', { method: 'POST', body: JSON.stringify({ email, password }) })
+export const me = () => request<User>('/auth/me')
+export const logout = (everywhere = false) =>
+  request<{ ok: true }>(`/auth/logout${everywhere ? '?everywhere=true' : ''}`, { method: 'POST' })
+export const changePassword = (current_password: string, new_password: string) =>
+  request<{ ok: true }>('/auth/password', { method: 'PUT', body: JSON.stringify({ current_password, new_password }) })
+
+export const listUsers = () => request<{ users: User[] }>('/users')
+export const createUser = (email: string, password: string, is_admin: boolean) =>
+  request<{ user: User }>('/users', { method: 'POST', body: JSON.stringify({ email, password, is_admin }) })
+export const resetUserPassword = (id: number, password: string) =>
+  request<{ ok: true }>(`/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) })
+export const deleteUser = (id: number) => request<{ ok: true }>(`/users/${id}`, { method: 'DELETE' })

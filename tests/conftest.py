@@ -85,7 +85,7 @@ def seeded(tmp_db, criteria):
 
 
 @pytest.fixture()
-def client(seeded):
+def anon_client(seeded):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -96,3 +96,16 @@ def client(seeded):
     app.router.routes = list(api.app.router.routes)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def client(anon_client):
+    """Logged in as the admin (user 1), who owns the seeded data. Tests that
+    need the anonymous client or a second user take ``anon_client``."""
+    from jobfinder import auth
+    from jobfinder.config import DEFAULT_USER_ID
+
+    db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("admin-pass-1"), is_admin=True)
+    r = anon_client.post("/auth/login", json={"email": "admin@example.com", "password": "admin-pass-1"})
+    anon_client.headers["Authorization"] = f"Bearer {r.json()['token']}"
+    return anon_client
