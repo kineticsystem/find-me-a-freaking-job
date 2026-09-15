@@ -237,7 +237,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await row.locator('input[type=checkbox]:not(:checked)').waitFor()   // this row, not any switched-off row
   check((await (await api('/sources')).json()).sources.find((s) => s.id === 'as-replit').following === 0, 'sources: toggle off persists')
   await row.locator('button:has-text("Remove")').click()
-  await page.waitForSelector('.toast:has-text("Removed as-replit")')
+  await page.waitForSelector('.toast:has-text("Removed as-replit from your list")')
   check(!(await (await api('/sources')).json()).sources.some((s) => s.id === 'as-replit'), 'sources: removed')
   // a host that does not exist: nothing to fetch, render or probe
   // (example.com is not a safe choice -- a Greenhouse board named "example" exists)

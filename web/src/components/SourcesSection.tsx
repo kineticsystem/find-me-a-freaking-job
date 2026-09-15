@@ -52,7 +52,7 @@ export function SourcesSection({ notify }: Props) {
     try {
       await api.deleteSource(s.id)
       setSources((list) => list?.filter((x) => x.id !== s.id) ?? null)
-      notify(`Removed ${s.id}; its jobs stay`)
+      notify(`Removed ${s.id} from your list; its jobs stay`)
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Could not remove', true)
     } finally {
@@ -100,7 +100,7 @@ export function SourcesSection({ notify }: Props) {
                   {s.last_error ? <span className="error"> · failing: {s.last_error.slice(0, 60)}</span> : ''}
                   {s.fail_count >= 5 ? <span className="error"> · paused after {s.fail_count} failures</span> : ''}
                 </span>
-                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source; its jobs stay">Remove</button>}
+                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source from your list; its jobs stay">Remove</button>}
               </li>
             ))}
           </ul>

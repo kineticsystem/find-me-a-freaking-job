@@ -1005,11 +1005,25 @@ def get_source(source_id: str) -> dict[str, Any] | None:
 
 
 def delete_source(source_id: str) -> bool:
-    """Remove a source; its jobs stay. Config-origin sources cannot be deleted
-    (the YAML would recreate them) -- disable those instead."""
+    """Remove a registry row; its jobs stay. Config-origin sources cannot be
+    deleted (the YAML would recreate them) -- switch those off instead."""
     with connect() as conn:
         cur = conn.execute("DELETE FROM sources WHERE id = ? AND origin != 'config'", (source_id,))
         return cur.rowcount > 0
+
+
+def unfollow_source(user_id: int, source_id: str) -> str | None:
+    """Take a source out of one user's list. The registry row stays while
+    anyone else has it; once nobody does it is dropped too (it would never
+    be fetched again). Returns 'removed', 'dropped' (row gone as well), or
+    None if it was not in the list."""
+    with connect() as conn:
+        if conn.execute("DELETE FROM user_sources WHERE user_id = ? AND source_id = ?", (user_id, source_id)).rowcount == 0:
+            return None
+        if conn.execute("SELECT 1 FROM user_sources WHERE source_id = ?", (source_id,)).fetchone():
+            return "removed"
+        conn.execute("DELETE FROM sources WHERE id = ? AND origin != 'config'", (source_id,))
+        return "dropped"
 
 
 def source_job_counts() -> dict[str, int]:

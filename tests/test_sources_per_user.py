@@ -115,14 +115,14 @@ def test_api_sources_are_per_user(anon_client, two):
     assert anon_client.delete("/sources/seed-board", headers=b).status_code == 400
     assert anon_client.post("/sources/seed-board/enabled", params={"enabled": "false"}, headers=a).status_code == 200
     assert db.source_followers("seed-board") == [two]
-    # pasting the same URL attaches to the existing row; now both follow, so neither may delete it
+    # pasting the same URL attaches to the existing row; removing is per list, the row lives while anyone has it
     db.follow_source(1, "gh-acme")
-    assert anon_client.delete("/sources/gh-acme", headers=b).status_code == 409
-    db.follow_source(1, "gh-acme", False)
-    with db.connect() as conn:
-        conn.execute("DELETE FROM user_sources WHERE user_id = 1 AND source_id = 'gh-acme'")
-    assert {s["id"]: s for s in anon_client.get("/sources", headers=b).json()["sources"]}["gh-acme"]["deletable"] is True
-    assert anon_client.delete("/sources/gh-acme", headers=b).status_code == 200
+    r = anon_client.delete("/sources/gh-acme", headers=b)
+    assert r.status_code == 200 and r.json()["dropped_for_everyone"] is False
+    assert "gh-acme" not in {s["id"] for s in anon_client.get("/sources", headers=b).json()["sources"]}
+    assert db.get_source("gh-acme") is not None and db.source_followers("gh-acme") == [1]
+    r = anon_client.delete("/sources/gh-acme", headers=a)
+    assert r.status_code == 200 and r.json()["dropped_for_everyone"] is True
     assert db.get_source("gh-acme") is None
 
 

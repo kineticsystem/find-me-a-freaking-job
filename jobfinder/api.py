@@ -229,7 +229,7 @@ def list_sources(user: CurrentUser) -> dict[str, Any]:
     discovered through their boards, their own CV searches. `following` is
     their switch. `jobs_stored` is what is in the database right now from
     it; `jobs_found` the running total fetched. Seed rows cannot be removed;
-    the rest can, and the server refuses if somebody else also follows it."""
+    the rest can, from this list only."""
     counts = db.source_job_counts()
     out = []
     for src in db.list_sources(user["id"]):
@@ -331,18 +331,16 @@ def toggle_source(source_id: str, user: CurrentUser, enabled: bool = True) -> di
 
 @user_api.delete("/sources/{source_id}")
 def remove_source(source_id: str, user: CurrentUser) -> dict[str, Any]:
-    """Remove a registry row: only if nobody else follows it, and never a
-    seed-list row (switch those off instead). Its jobs stay."""
+    """Remove a source from your list. Others who have it keep it; the
+    shared row is dropped only once nobody has it. Seed-list rows cannot be
+    removed, only switched off. Its jobs stay either way."""
     src = db.get_source(source_id)
     if not src or not db.in_list(user["id"], source_id):
         raise HTTPException(404, "no such source in your list")
     if src["origin"] == "config":
-        raise HTTPException(400, "this source comes from config/sources.yaml; switch it off instead of deleting it")
-    others = [u for u in db.source_followers(source_id) if u != user["id"]]
-    if others:
-        raise HTTPException(409, f"{len(others)} other {'person follows' if len(others) == 1 else 'people follow'} this source; switch it off for yourself instead")
-    db.delete_source(source_id)
-    return {"ok": True, "deleted": source_id}
+        raise HTTPException(400, "this source comes from config/sources.yaml; switch it off instead of removing it")
+    outcome = db.unfollow_source(user["id"], source_id)
+    return {"ok": True, "deleted": source_id, "dropped_for_everyone": outcome == "dropped"}
 
 
 class SettingsUpdate(BaseModel):
