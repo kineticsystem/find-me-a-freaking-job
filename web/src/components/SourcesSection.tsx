@@ -6,7 +6,7 @@ interface Props {
   notify: (text: string, error?: boolean) => void
 }
 
-const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'seed list', discovered: 'discovered', user: 'added by hand', keyword: 'search from your CV' }
+const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'default', discovered: 'discovered', user: 'added by hand', keyword: 'keyword search from your CV' }
 
 const company = (s: Source) => (typeof s.config.company === 'string' && s.config.company) || (typeof s.config.slug === 'string' && s.config.slug) || s.id
 
