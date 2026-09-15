@@ -105,7 +105,7 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify, self,
       </>}
       <ProfileSection notify={notify} onChanged={onChanged} />
       <PreferencesSection notify={notify} onChanged={onChanged} />
-      {admin && <SourcesSection notify={notify} />}
+      <SourcesSection notify={notify} />
       {admin && <UsersSection self={self} notify={notify} />}
       <AccountSection self={self} notify={notify} onLoggedOut={onLoggedOut} />
       {admin && <DangerZone notify={notify} onDone={() => { onSaved(current as Settings); onClose() }} />}

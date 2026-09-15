@@ -145,8 +145,10 @@ export interface Profile {
 export interface Source {
   id: string
   type: string
-  origin: 'config' | 'discovered' | 'user'
-  enabled: number
+  origin: 'config' | 'discovered' | 'user' | 'keyword'
+  enabled: number          // the registry switch (auto-off after repeated failures)
+  following: number        // your own switch
+  other_followers: number
   config: Record<string, unknown>
   added_at: string
   last_run_at: string | null

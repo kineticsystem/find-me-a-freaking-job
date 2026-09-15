@@ -219,12 +219,17 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
                                          summary=f"A {title.lower()} role at {company}; a demo posting.",
                                          eligibility="Demo: eligible.", salary=job.salary_raw, tech_stack=["Python", "C++"],
                                          concerns=["demo data"], rationale="demo")
-    db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
     # Accounts for the browser suite: the admin owns the seeded scores.
     from . import auth
     if not db.any_user_can_login():
         db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("demo-admin-password"), is_admin=True)
         db.create_user("user@example.com", auth.hash_password("demo-user-password"))
+    # Both follow the demo source (so they see its postings); the registry
+    # switch stays off so no scan ever fetches it.
+    db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
+    for u in db.list_users():
+        db.follow_source(u["id"], "demo", True)
+    db.set_source_enabled("demo", False)
     print(f"seeded {n} fictional postings under criteria {criteria}; accounts admin@example.com / user@example.com")
     return 0
 

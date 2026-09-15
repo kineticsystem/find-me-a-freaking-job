@@ -53,6 +53,8 @@ def test_old_single_user_database_is_migrated_and_nothing_is_lost(tmp_path, monk
 def two_users(seeded, criteria):
     with db.connect() as conn:
         conn.execute("INSERT OR IGNORE INTO users (id, name, created_at) VALUES (2, 'second', 't')")
+    for sid in ("test", "gh-globex"):
+        db.follow_source(2, sid)                       # same boards as user 1
     return seeded
 
 

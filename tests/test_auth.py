@@ -95,10 +95,11 @@ def test_decisions_and_preferences_follow_the_token(client, accounts, seeded):
 def test_admin_routes_are_admin_only(client, accounts):
     admin = _login(client, "admin@example.com", "admin-pass-1")
     other = _login(client, "other@example.com", "other-pass-1")
-    for path in ("/settings", "/sources", "/users", "/runs"):
+    for path in ("/settings", "/users", "/runs"):
         assert client.get(path, headers=other).status_code == 403, path
         assert client.get(path, headers=admin).status_code == 200, path
     assert client.get("/profile", headers=other).status_code == 200      # their own CV and notes
+    assert client.get("/sources", headers=other).status_code == 200      # their own list
     assert client.post("/users", json={"email": "x@example.com", "password": "12345678"}, headers=other).status_code == 403
 
 

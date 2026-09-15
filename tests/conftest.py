@@ -67,7 +67,10 @@ def make_job(company: str, title: str, location: str = "Remote", **kw) -> Normal
 
 @pytest.fixture()
 def seeded(tmp_db, criteria):
-    """Three jobs: one strong (deep-dived), one triaged only, one unevaluated."""
+    """Three jobs: one strong (deep-dived), one triaged only, one unevaluated.
+    Their two sources are registered and followed by user 1."""
+    db.upsert_source({"id": "test", "type": "remoteok", "enabled": True}, origin="user", followers=[1])
+    db.upsert_source({"id": "gh-globex", "type": "greenhouse", "slug": "globex", "enabled": True}, origin="user", followers=[1])
     with db.connect() as conn:
         a, _ = db.upsert_job(conn, make_job("Acme", "Senior C++ Engineer", "Remote US"))
         b, _ = db.upsert_job(conn, make_job("Globex", "Python Backend Developer", "Amsterdam, Netherlands",

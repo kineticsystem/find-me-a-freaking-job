@@ -150,8 +150,11 @@ def probe_ats_by_name(url: str) -> tuple[str, str] | None:
     return None
 
 
-def _register(stype: str, slug: str, via: str, budget: list[int]) -> str | None:
-    """Register one discovered board. `budget` is a one-element mutable counter."""
+def _register(stype: str, slug: str, via: str, budget: list[int], followers: Iterable[int]) -> str | None:
+    """Register one discovered board, followed by `followers` -- the people
+    who follow whatever it was found through, so discovery never leaks one
+    person's interests into another's list. `budget` is a one-element
+    mutable counter."""
     if budget[0] <= 0:
         return None
     cfg = source_config_for(stype, slug) | {"discovered_from": via}
@@ -159,7 +162,7 @@ def _register(stype: str, slug: str, via: str, budget: list[int]) -> str | None:
     if db.seen_discovery(f"source:{source_id}"):
         return None
     db.mark_discovery(f"source:{source_id}", "source", via)
-    if db.upsert_source(cfg, origin="discovered"):
+    if db.upsert_source(cfg, origin="discovered", followers=list(followers)):
         budget[0] -= 1
         log.info("discovered %s board %r (via %s)", stype, slug, via)
         return source_id
@@ -176,13 +179,17 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
         return []
     budget = [cfg.max_new_boards_per_run]
     found: list[str] = []
+    followers_of: dict[str, list[int]] = {}
     for job in jobs:
         if budget[0] <= 0:
             break
+        if job.source_id not in followers_of:
+            followers_of[job.source_id] = db.source_followers(job.source_id)
+        heirs = followers_of[job.source_id]
         for candidate in (job.apply_url, job.url):
             hit = detect_ats(candidate)
             if hit:
-                sid = _register(*hit, via=f"harvest:{job.source_id}", budget=budget)
+                sid = _register(*hit, via=f"harvest:{job.source_id}", budget=budget, followers=heirs)
                 if sid:
                     found.append(sid)
                 break
@@ -191,7 +198,7 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
             for match in re.finditer(r"https?://[^\s\"'<>)]+", job.description[:8000]):
                 hit = detect_ats(match.group(0))
                 if hit:
-                    sid = _register(*hit, via=f"harvest-body:{job.source_id}", budget=budget)
+                    sid = _register(*hit, via=f"harvest-body:{job.source_id}", budget=budget, followers=heirs)
                     if sid:
                         found.append(sid)
                     break
@@ -209,8 +216,10 @@ JOBICY_GEOS = {
 
 
 def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
-    """Ephemeral per-run query sources built from one user's CV vocabulary:
-    keyed sources are fetched per user (plan, Decision 4)."""
+    """Query sources built from one user's CV vocabulary. Registered as
+    sources (origin 'keyword') followed by that user alone, so they show in
+    their list, can be switched off, and boards harvested from their results
+    are theirs; fetched per user by the keyword step (plan, Decision 4)."""
     prefs, digest = cand.prefs, cand.digest
     assert digest is not None
     terms: list[str] = []
@@ -238,7 +247,7 @@ def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
             "geo": geo,
             "count": 50,
             "enabled": True,
-            "_ephemeral": True,
+            "company": f"search: {term} · {geo}",
         })
     return out
 
@@ -338,7 +347,7 @@ def run_websearch(cand: Candidate, workdir: Path) -> dict[str, Any]:
         for url in urls:
             hit = detect_ats(url)
             if hit:
-                sid = _register(*hit, via=f"search:{query}"[:120], budget=budget)
+                sid = _register(*hit, via=f"search:{query}"[:120], budget=budget, followers=[cand.user_id])
                 if sid:
                     stats["new_sources"].append(sid)
 

@@ -7,6 +7,7 @@ threads both touch this, and short-lived connections keep that trivially safe.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import Any, Iterable, Iterator
 
 from .config import settings
 from .models import NormalizedJob, utcnow
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 -- Users. Until login exists there is exactly one, the default user (id 1),
@@ -137,6 +140,28 @@ CREATE TABLE IF NOT EXISTS sources (
     jobs_found    INTEGER NOT NULL DEFAULT 0,
     fail_count    INTEGER NOT NULL DEFAULT 0
 );
+
+-- Who follows a source. The registry row (what a source is, its health) is
+-- shared; whether it is fetched for you is this row. A source is fetched if
+-- anyone follows it, and its postings are shown to and scored for its
+-- followers only.
+CREATE TABLE IF NOT EXISTS user_sources (
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    enabled   INTEGER NOT NULL DEFAULT 1,
+    added_at  TEXT NOT NULL,
+    PRIMARY KEY (user_id, source_id)
+);
+
+-- Every source a posting was seen from (the same job on two boards is one
+-- row in jobs and two here). Visibility is: one of these is followed.
+CREATE TABLE IF NOT EXISTS job_sources (
+    job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    source_id  TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    PRIMARY KEY (job_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_job_sources_source ON job_sources(source_id);
 
 -- One preferences document per user: the whole Preferences model as JSON,
 -- validated on write and on read. A document rather than tables because
@@ -264,6 +289,30 @@ def init_db() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         # The pre-login default user owns all existing data; it becomes the admin.
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (DEFAULT_USER_ID,))
+        _migrate_sources_per_user(conn)
+
+
+def _migrate_sources_per_user(conn: sqlite3.Connection) -> None:
+    """A database from before following existed: every user follows every
+    source as it was (on or off), and every job is attributed to the source
+    it was first seen from."""
+    now = utcnow()
+    if conn.execute("SELECT 1 FROM sources LIMIT 1").fetchone() and not conn.execute("SELECT 1 FROM user_sources LIMIT 1").fetchone():
+        conn.execute(
+            """INSERT OR IGNORE INTO user_sources (user_id, source_id, enabled, added_at)
+               SELECT u.id, s.id, s.enabled, ? FROM users u CROSS JOIN sources s""", (now,))
+        log.info("sources: every user now follows the %d existing sources", conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0])
+    if conn.execute("SELECT 1 FROM jobs LIMIT 1").fetchone() and not conn.execute("SELECT 1 FROM job_sources LIMIT 1").fetchone():
+        conn.execute("INSERT OR IGNORE INTO job_sources (job_id, source_id, first_seen) SELECT id, source_id, first_seen FROM jobs")
+
+
+# A job this user can see: seen from a source they follow, or one they have
+# already made a decision on (unfollowing a board must not hide a shortlist).
+# `u` is the user_state alias of the enclosing query; the user id is bound once.
+_VISIBLE = """(EXISTS (SELECT 1 FROM job_sources js JOIN user_sources us
+                        ON us.source_id = js.source_id AND us.user_id = ? AND us.enabled = 1
+                       WHERE js.job_id = j.id)
+               OR u.status IS NOT NULL)"""
 
 
 # --------------------------------------------------------------------------
@@ -368,7 +417,10 @@ def create_user(email: str, password_hash: str, *, name: str = "", is_admin: boo
             "INSERT INTO users (name, email, password_hash, is_admin, created_at) VALUES (?,?,?,?,?)",
             (name or email.split("@")[0], email.strip().lower(), password_hash, int(is_admin), utcnow()),
         )
-        return int(cur.lastrowid)
+        uid = int(cur.lastrowid)
+        conn.execute("""INSERT OR IGNORE INTO user_sources (user_id, source_id, enabled, added_at)
+                        SELECT ?, id, enabled, ? FROM sources WHERE origin = 'config'""", (uid, utcnow()))
+        return uid
 
 
 def claim_user(user_id: int, email: str, password_hash: str, *, is_admin: bool) -> None:
@@ -471,6 +523,7 @@ def upsert_job(conn: sqlite3.Connection, job: NormalizedJob) -> tuple[int, bool]
                WHERE id = ?""",
             (now, job.description, job.description, job.salary_raw, row["id"]),
         )
+        add_job_source(conn, int(row["id"]), job.source_id, now)
         return int(row["id"]), False
 
     cur = conn.execute(
@@ -485,42 +538,50 @@ def upsert_job(conn: sqlite3.Connection, job: NormalizedJob) -> tuple[int, bool]
         ),
     )
     job_id = int(cur.lastrowid)
+    add_job_source(conn, job_id, job.source_id, now)
     return job_id, True
+
+
+def add_job_source(conn: sqlite3.Connection, job_id: int, source_id: str, when: str | None = None) -> None:
+    conn.execute("INSERT OR IGNORE INTO job_sources (job_id, source_id, first_seen) VALUES (?,?,?)",
+                 (job_id, source_id, when or utcnow()))
 
 
 def jobs_needing(stage: str, criteria_hash: str, limit: int, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
     """Jobs with no evaluation for this user and stage under the current criteria."""
     with connect() as conn:
         return conn.execute(
-            """SELECT j.* FROM jobs j
+            f"""SELECT j.* FROM jobs j
                LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE COALESCE(u.status, 'new') NOT IN ('dismissed', 'archived')
+                 AND {_VISIBLE}
                  AND NOT EXISTS (
                        SELECT 1 FROM evaluations e
                        WHERE e.job_id = j.id AND e.user_id = ? AND e.stage = ?
                          AND e.criteria_hash = ?)
                ORDER BY j.first_seen DESC
                LIMIT ?""",
-            (user_id, user_id, stage, criteria_hash, limit),
+            (user_id, user_id, user_id, stage, criteria_hash, limit),
         ).fetchall()
 
 
 def deepdive_candidates(criteria_hash: str, min_score: int, limit: int, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
-            """SELECT j.*, e.score AS triage_score FROM jobs j
+            f"""SELECT j.*, e.score AS triage_score FROM jobs j
                JOIN evaluations e ON e.job_id = j.id AND e.user_id = ?
                     AND e.stage = 'triage' AND e.criteria_hash = ?
                LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE e.score >= ?
                  AND COALESCE(u.status, 'new') NOT IN ('dismissed', 'archived')
+                 AND {_VISIBLE}
                  AND NOT EXISTS (
                        SELECT 1 FROM evaluations d
                        WHERE d.job_id = j.id AND d.user_id = ? AND d.stage = 'deepdive'
                          AND d.criteria_hash = ?)
                ORDER BY e.score DESC
                LIMIT ?""",
-            (user_id, criteria_hash, user_id, min_score, user_id, criteria_hash, limit),
+            (user_id, criteria_hash, user_id, min_score, user_id, user_id, criteria_hash, limit),
         ).fetchall()
 
 
@@ -604,8 +665,9 @@ def list_jobs(
         LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
         -- unevaluated jobs count as 0, so min_score=0 shows everything
         WHERE COALESCE(d.score, b.triage_score, o.score, 0) >= ?
+          AND {_VISIBLE}
     """
-    params: list[Any] = [user_id, ch, user_id, ch, user_id, min_score]
+    params: list[Any] = [user_id, ch, user_id, ch, user_id, min_score, user_id]
     if status:
         sql += " AND COALESCE(u.status,'new') = ?"
         params.append(status)
@@ -614,7 +676,7 @@ def list_jobs(
     else:
         sql += " AND COALESCE(u.status,'new') NOT IN ('archived', 'dismissed')"
     if source:
-        sql += " AND j.source_id = ?"
+        sql += " AND EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id = j.id AND js.source_id = ?)"
         params.append(source)
     if remote:
         sql += " AND j.remote_type = ?"
@@ -722,15 +784,16 @@ def archive_jobs(*, older_than_days: int | None = None, ids: Iterable[int] | Non
     with connect() as conn:
         if older_than_days is not None:
             cur = conn.execute(
-                """INSERT INTO user_state (job_id, user_id, status, updated_at)
+                f"""INSERT INTO user_state (job_id, user_id, status, updated_at)
                    SELECT j.id, ?, 'archived', ? FROM jobs j
                    LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                    WHERE COALESCE(u.status, 'new') = ?
+                     AND {_VISIBLE}
                      AND datetime(j.last_seen) <= datetime('now', ?)
                    ON CONFLICT(job_id, user_id) DO UPDATE SET
                      status = 'archived', updated_at = excluded.updated_at
                    WHERE user_state.status != 'archived'""",
-                (user_id, now, user_id, only_status, f"-{int(older_than_days)} days"),
+                (user_id, now, user_id, only_status, user_id, f"-{int(older_than_days)} days"),
             )
             changed += cur.rowcount
         for job_id in ids or []:
@@ -751,19 +814,23 @@ def facets(user_id: int = DEFAULT_USER_ID) -> dict[str, Any]:
     with connect() as conn:
         by_status = {
             r["status"]: r["n"] for r in conn.execute(
-                """SELECT COALESCE(u.status,'new') AS status, COUNT(*) AS n
+                f"""SELECT COALESCE(u.status,'new') AS status, COUNT(*) AS n
                    FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
-                   GROUP BY 1 ORDER BY 1""", (user_id,)
+                   WHERE {_VISIBLE} GROUP BY 1 ORDER BY 1""", (user_id, user_id)
             )
         }
         by_source = {
             r["source_id"]: r["n"] for r in conn.execute(
-                "SELECT source_id, COUNT(*) AS n FROM jobs GROUP BY 1 ORDER BY 2 DESC"
+                """SELECT js.source_id, COUNT(DISTINCT js.job_id) AS n FROM job_sources js
+                   JOIN user_sources us ON us.source_id = js.source_id AND us.user_id = ? AND us.enabled = 1
+                   GROUP BY 1 ORDER BY 2 DESC""", (user_id,)
             )
         }
         by_remote = {
             r["remote_type"]: r["n"] for r in conn.execute(
-                "SELECT COALESCE(remote_type,'unknown') AS remote_type, COUNT(*) AS n FROM jobs GROUP BY 1"
+                f"""SELECT COALESCE(j.remote_type,'unknown') AS remote_type, COUNT(*) AS n
+                   FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
+                   WHERE {_VISIBLE} GROUP BY 1""", (user_id, user_id)
             )
         }
     return {"status": by_status, "source": by_source, "remote": by_remote}
@@ -804,8 +871,9 @@ def list_runs(limit: int = 20) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------
 # sources
 # --------------------------------------------------------------------------
-def upsert_source(cfg: dict[str, Any], origin: str = "config") -> bool:
-    """Register a source. Returns True if it was newly added."""
+def upsert_source(cfg: dict[str, Any], origin: str = "config", followers: Iterable[int] | None = None) -> bool:
+    """Register a source. Returns True if it was newly added. `followers`
+    start following it (config sources: everyone; None = nobody yet)."""
     with connect() as conn:
         existing = conn.execute(
             "SELECT id FROM sources WHERE id = ?", (cfg["id"],)
@@ -827,20 +895,74 @@ def upsert_source(cfg: dict[str, Any], origin: str = "config") -> bool:
             (cfg["id"], cfg["type"], json.dumps(cfg),
              int(cfg.get("enabled", True)), origin, utcnow()),
         )
+        if origin == "config":
+            followers = [r["id"] for r in conn.execute("SELECT id FROM users")]
+        for uid in followers or []:
+            conn.execute("INSERT OR IGNORE INTO user_sources (user_id, source_id, enabled, added_at) VALUES (?,?,?,?)",
+                         (uid, cfg["id"], int(cfg.get("enabled", True)), utcnow()))
         return True
 
 
+def follow_source(user_id: int, source_id: str, enabled: bool = True) -> bool:
+    """Follow (or switch off, for this user only). Following a board that had
+    been switched off after failures gives it another chance."""
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,)).fetchone():
+            return False
+        conn.execute(
+            """INSERT INTO user_sources (user_id, source_id, enabled, added_at) VALUES (?,?,?,?)
+               ON CONFLICT(user_id, source_id) DO UPDATE SET enabled = excluded.enabled""",
+            (user_id, source_id, int(enabled), utcnow()))
+        if enabled:
+            conn.execute("UPDATE sources SET enabled = 1, fail_count = 0 WHERE id = ?", (source_id,))
+        return True
+
+
+def follows(user_id: int, source_id: str) -> bool:
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM user_sources WHERE user_id = ? AND source_id = ? AND enabled = 1",
+                            (user_id, source_id)).fetchone() is not None
+
+
+def source_followers(source_id: str) -> list[int]:
+    """Who follows it (switched on). A discovered board inherits these."""
+    with connect() as conn:
+        return [int(r["user_id"]) for r in conn.execute(
+            "SELECT user_id FROM user_sources WHERE source_id = ? AND enabled = 1 ORDER BY user_id", (source_id,))]
+
+
+def follow_config_sources(user_id: int) -> int:
+    """A new account follows the seed list, as everyone does by default."""
+    with connect() as conn:
+        return conn.execute(
+            """INSERT OR IGNORE INTO user_sources (user_id, source_id, enabled, added_at)
+               SELECT ?, id, enabled, ? FROM sources WHERE origin = 'config'""", (user_id, utcnow())).rowcount
+
+
 def active_sources() -> list[dict[str, Any]]:
+    """What the shared fetch runs: on, not failing, followed by someone.
+    Keyword sources are fetched per user by the keyword step, not here."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM sources WHERE enabled = 1 AND fail_count < 5 ORDER BY id"
+            """SELECT * FROM sources s WHERE enabled = 1 AND fail_count < 5 AND origin != 'keyword'
+                 AND EXISTS (SELECT 1 FROM user_sources us WHERE us.source_id = s.id AND us.enabled = 1)
+               ORDER BY id"""
         ).fetchall()
     return [json.loads(r["config"]) | {"_origin": r["origin"]} for r in rows]
 
 
-def list_sources() -> list[dict[str, Any]]:
+def list_sources(user_id: int | None = None) -> list[dict[str, Any]]:
+    """The registry; with a user, whether they follow each row and how many
+    others do."""
     with connect() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM sources ORDER BY id")]
+        if user_id is None:
+            return [dict(r) for r in conn.execute("SELECT * FROM sources ORDER BY id")]
+        rows = conn.execute(
+            """SELECT s.*, COALESCE(me.enabled, 0) AS following,
+                      (SELECT COUNT(*) FROM user_sources o WHERE o.source_id = s.id AND o.enabled = 1 AND o.user_id != ?) AS other_followers
+               FROM sources s LEFT JOIN user_sources me ON me.source_id = s.id AND me.user_id = ?
+               ORDER BY s.id""", (user_id, user_id)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def record_source_result(source_id: str, found: int, error: str = "") -> None:
@@ -884,7 +1006,7 @@ def delete_source(source_id: str) -> bool:
 
 def source_job_counts() -> dict[str, int]:
     with connect() as conn:
-        return {r["source_id"]: r["n"] for r in conn.execute("SELECT source_id, COUNT(*) AS n FROM jobs GROUP BY 1")}
+        return {r["source_id"]: r["n"] for r in conn.execute("SELECT source_id, COUNT(*) AS n FROM job_sources GROUP BY 1")}
 
 
 # --------------------------------------------------------------------------
@@ -951,10 +1073,11 @@ def stale_score_count(criteria_hash: str, user_id: int = DEFAULT_USER_ID) -> int
     """This user's jobs whose only scores predate the current criteria."""
     with connect() as conn:
         return conn.execute(
-            """SELECT COUNT(*) FROM jobs j
+            f"""SELECT COUNT(*) FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ?
                WHERE EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.user_id = ?)
+                 AND {_VISIBLE}
                  AND NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.job_id = j.id AND e.user_id = ? AND e.criteria_hash = ?)""",
-            (user_id, user_id, criteria_hash),
+            (user_id, user_id, user_id, user_id, criteria_hash),
         ).fetchone()[0]
 
 
@@ -962,13 +1085,13 @@ def stats(user_id: int = DEFAULT_USER_ID) -> dict[str, Any]:
     with connect() as conn:
         q = lambda s, *p: conn.execute(s, p).fetchone()[0]  # noqa: E731
         return {
-            "jobs": q("SELECT COUNT(*) FROM jobs"),
+            "jobs": q(f"SELECT COUNT(*) FROM jobs j LEFT JOIN user_state u ON u.job_id = j.id AND u.user_id = ? WHERE {_VISIBLE}", user_id, user_id),
             "evaluated": q("SELECT COUNT(DISTINCT job_id) FROM evaluations WHERE user_id = ?", user_id),
             "shortlisted": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='shortlisted'", user_id),
             "applied": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='applied'", user_id),
             "dismissed": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='dismissed'", user_id),
             "archived": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='archived'", user_id),
-            "sources": q("SELECT COUNT(*) FROM sources WHERE enabled=1"),
+            "sources": q("SELECT COUNT(*) FROM user_sources us JOIN sources s ON s.id = us.source_id WHERE us.user_id = ? AND us.enabled = 1 AND s.enabled = 1", user_id),
             "discovered_sources": q("SELECT COUNT(*) FROM sources WHERE origin='discovered'"),
             "runs": q("SELECT COUNT(*) FROM runs"),
         }

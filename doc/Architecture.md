@@ -85,7 +85,11 @@ Discovery bookkeeping lives in the `discovery_log` table: which queries have bee
 
 LinkedIn and Indeed are deliberately absent. Both wall or block automated access; an adapter would be a scraper that silently returns nothing.
 
-`config/sources.yaml` is the seed. On every run it is upserted into the `sources` table, which is the live registry. The file stays authoritative for *what* a config source is (type, slug, options) but not for whether it is on: `enabled` in the YAML applies only when the row is first created, and a source switched off in the UI stays off across re-syncs. Rows have an `origin` of `config`, `discovered` (harvest) or `user` (pasted into the UI); only the last two can be deleted, since the YAML would recreate a config one.
+`config/sources.yaml` is the seed. On every run it is upserted into the `sources` table, which is the live registry. The file stays authoritative for *what* a config source is (type, slug, options) but not for whether anyone follows it: `enabled` in the YAML applies only when the row is first created. Rows have an `origin` of `config`, `discovered` (harvest or web search), `user` (pasted into the UI) or `keyword` (a query built from one user's CV vocabulary).
+
+**Following is per user** (`user_sources`: user, source, on/off). The registry row is shared so a company two people follow is fetched once and each posting exists once; who follows it decides who sees it. Defaults by how a source arrives: seed rows are followed by every account, including ones created later; a pasted URL is followed by whoever pasted it, and pasting a URL somebody else already added follows the existing row rather than creating a second; a discovered board inherits the followers of the source its posting came from, so discovery never leaks one person's interests into another's list; a keyword source is followed by the one user it was built from. A source is fetched if at least one follower has it on (`active_sources`); following a board that had switched itself off after failures resets its failure count. A row can be deleted only by its sole follower and never if it comes from the seed list.
+
+**Visibility.** `job_sources` records every source a posting was seen from (the same job on two boards is one `jobs` row, two here). A job is visible to a user — in the list, the facets, the counts, and the triage and deep-dive candidate sets — if one of its sources is followed by them, or if they already have a decision on it, so switching a board off does not hide a shortlist. Every job query carries that predicate (`db._VISIBLE`).
 
 ## opencode integration
 
@@ -129,6 +133,8 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 | `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
+| `user_sources` | Who follows which source, and whether it is on for them. |
+| `job_sources` | Every source a posting was seen from. |
 | `discovery_log` | What discovery has already tried or seen. |
 
 **Per user.** `pipeline/profile.py` builds a `Candidate` per user — id, preferences, CV text, notes, digest, and from those the criteria hash — and everything that judges a posting takes one: the prompts, triage, deep dive, keyword sources, query generation, the report. Every query over scores and decisions takes a `user_id`, supplied by the API from the bearer token. Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
@@ -172,9 +178,9 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 | GET / POST | `/runs` | history / trigger now |
 | POST | `/runs/stop` | cooperative stop: the stages check a flag between units, and the in-flight opencode session's process group is killed so the wait is seconds; the run is recorded as `stopped` with what it scored |
 | GET | `/digest` | latest Markdown digest |
-| GET | `/sources` | the registry with per-source counts and health |
-| POST | `/sources` | `{"url": …}` — register a Greenhouse / Lever / Ashby board from its careers URL; fetched once to check it answers and has openings |
-| POST | `/sources/{id}/enabled?enabled=` · DELETE `/sources/{id}` | toggle · remove (not config-origin) |
+| GET | `/sources` | the registry as this user sees it: `following`, `other_followers`, counts, health |
+| POST | `/sources` | `{"url": …}` — add a company from its careers URL to your list; a board somebody else already added is followed, not duplicated |
+| POST | `/sources/{id}/enabled?enabled=` · DELETE `/sources/{id}` | your own switch · remove the row (only its sole follower may; never a seed row) |
 | GET / PATCH | `/settings` | the interval and run-on-start; a PATCH rewrites the key in `config/settings.yaml` in place (comments kept) and reschedules the running scheduler, so no restart |
 | GET | `/profile` | the CV on disk, the notes, the cached digest |
 | GET / POST | `/profile/cv` | download the CV as uploaded · multipart upload, replacing the previous one; the digest is rebuilt and the user re-scored on the next run |

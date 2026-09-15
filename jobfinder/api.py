@@ -223,16 +223,19 @@ def latest_digest() -> str:
     return path.read_text()
 
 
-@admin_api.get("/sources")
-def list_sources() -> dict[str, Any]:
-    """Every source with what it has produced. `jobs_stored` is what is in the
-    database right now from it; `jobs_found` is the running total fetched."""
+@user_api.get("/sources")
+def list_sources(user: CurrentUser) -> dict[str, Any]:
+    """The shared registry as this user sees it: `following` is their own
+    switch, `other_followers` how many others have it on. `jobs_stored` is
+    what is in the database right now from it; `jobs_found` the running
+    total fetched. A row can be deleted only by whoever is its only
+    follower, and never a seed-list row."""
     counts = db.source_job_counts()
     out = []
-    for src in db.list_sources():
+    for src in db.list_sources(user["id"]):
         cfg = json.loads(src["config"])
         out.append({**src, "config": cfg, "jobs_stored": counts.get(src["id"], 0),
-                    "deletable": src["origin"] != "config"})
+                    "deletable": src["origin"] != "config" and src["other_followers"] == 0})
     return {"sources": out}
 
 
@@ -243,28 +246,38 @@ class SourceAdd(BaseModel):
     url: str = Field(..., min_length=8, max_length=500)
 
 
-def _register_board(stype: str, slug: str, url: str, how: str) -> dict[str, Any]:
+def _follow_existing(user_id: int, source_id: str, how: str) -> dict[str, Any]:
+    """Somebody else already added it: start following the existing row."""
+    if db.follows(user_id, source_id):
+        raise HTTPException(409, f"{source_id} is already in your list ({how})")
+    db.follow_source(user_id, source_id, True)
+    return {"ok": True, "source_id": source_id, "how": how, "open_positions": None,
+            "note": "already registered by someone else; it is now in your list too"}
+
+
+def _register_board(stype: str, slug: str, url: str, how: str, user_id: int) -> dict[str, Any]:
     from .sources import build
 
     cfg = discovery.source_config_for(stype, slug, url)
     source_id = cfg["id"]
     if db.get_source(source_id):
-        raise HTTPException(409, f"{source_id} is already registered ({how})")
+        return _follow_existing(user_id, source_id, how)
     try:
         found = build(cfg).fetch()
     except Exception as exc:
         raise HTTPException(400, f"{stype} board '{slug}' did not answer: {type(exc).__name__}: {exc}") from exc
     if not found:
         raise HTTPException(400, f"{stype} board '{slug}' answered but lists no open positions; not added")
-    db.upsert_source(cfg, origin="user")
+    db.upsert_source(cfg, origin="user", followers=[user_id])
     db.mark_discovery(f"source:{source_id}", "source", url)
     return {"ok": True, "source_id": source_id, "type": stype, "slug": slug, "open_positions": len(found),
             "how": how, "note": "its postings will be fetched on the next scan"}
 
 
-@admin_api.post("/sources")
-def add_source(body: SourceAdd) -> dict[str, Any]:
-    """Register a company from its careers URL.
+@user_api.post("/sources")
+def add_source(body: SourceAdd, user: CurrentUser) -> dict[str, Any]:
+    """Add a company from its careers URL to your list. The registry row is
+    shared -- a URL somebody else already added is followed, not duplicated.
 
     1. A Greenhouse / Lever / Ashby URL is registered as that board.
     2. Otherwise the page is fetched and, if needed, rendered in a headless
@@ -281,14 +294,14 @@ def add_source(body: SourceAdd) -> dict[str, Any]:
 
     hit = discovery.detect_ats(url)
     if hit:
-        return _register_board(*hit, url=url, how="from the URL")
+        return _register_board(*hit, url=url, how="from the URL", user_id=user["id"])
 
     try:
         hit = discovery.sniff_ats(url)
     except Exception as exc:  # noqa: BLE001 - never a 500 for a bad URL
         raise HTTPException(400, f"Could not reach that page: {type(exc).__name__}: {exc}") from exc
     if hit:
-        return _register_board(*hit, url=url, how="found behind the page")
+        return _register_board(*hit, url=url, how="found behind the page", user_id=user["id"])
 
     page = render_mod.render(url)
     if len(page.text) < 200:
@@ -296,30 +309,38 @@ def add_source(body: SourceAdd) -> dict[str, Any]:
     host = re.sub(r"^www\.", "", re.sub(r"^https?://", "", url).split("/")[0])
     source_id = "web-" + re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
     if db.get_source(source_id):
-        raise HTTPException(409, f"{source_id} is already registered")
+        return _follow_existing(user["id"], source_id, "the page is already registered")
     company = host.split(".")[0].replace("-", " ").title()
     cfg = {"id": source_id, "type": "webpage", "url": url, "enabled": True, "company": company, "added_from": url}
-    db.upsert_source(cfg, origin="user")
+    db.upsert_source(cfg, origin="user", followers=[user["id"]])
     db.mark_discovery(f"source:{source_id}", "source", url)
     return {"ok": True, "source_id": source_id, "type": "webpage", "slug": host, "open_positions": None,
             "how": "no job board found behind the page; it will be read by the model on each scan",
             "note": "its postings will be extracted on the next scan"}
 
 
-@admin_api.post("/sources/{source_id}/enabled")
-def toggle_source(source_id: str, enabled: bool = True) -> dict[str, Any]:
-    if not db.set_source_enabled(source_id, enabled):
+@user_api.post("/sources/{source_id}/enabled")
+def toggle_source(source_id: str, user: CurrentUser, enabled: bool = True) -> dict[str, Any]:
+    """Your own switch: on means fetched for you and its postings shown to
+    you; off hides them (except what you already decided on) and, if nobody
+    else follows it, stops it being fetched at all."""
+    if not db.follow_source(user["id"], source_id, enabled):
         raise HTTPException(404, "no such source")
     return {"ok": True, "source_id": source_id, "enabled": enabled}
 
 
-@admin_api.delete("/sources/{source_id}")
-def remove_source(source_id: str) -> dict[str, Any]:
+@user_api.delete("/sources/{source_id}")
+def remove_source(source_id: str, user: CurrentUser) -> dict[str, Any]:
+    """Remove a registry row: only if nobody else follows it, and never a
+    seed-list row (switch those off instead). Its jobs stay."""
     src = db.get_source(source_id)
     if not src:
         raise HTTPException(404, "no such source")
     if src["origin"] == "config":
-        raise HTTPException(400, "this source comes from config/sources.yaml; disable it instead of deleting it")
+        raise HTTPException(400, "this source comes from config/sources.yaml; switch it off instead of deleting it")
+    others = [u for u in db.source_followers(source_id) if u != user["id"]]
+    if others:
+        raise HTTPException(409, f"{len(others)} other {'person follows' if len(others) == 1 else 'people follow'} this source; switch it off for yourself instead")
     db.delete_source(source_id)
     return {"ok": True, "deleted": source_id}
 

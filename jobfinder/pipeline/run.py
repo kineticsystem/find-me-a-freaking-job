@@ -174,12 +174,17 @@ def _fetch_keyword_sources(cand: profile.Candidate, workdir: Path, stats: dict[s
     out: list[RawJob] = []
     found: dict[str, Any] = {}
     for cfg in discovery.keyword_sources(cand):
+        db.upsert_source(cfg, origin="keyword", followers=[cand.user_id])
+        if not db.follows(cand.user_id, cfg["id"]):
+            continue                                   # switched off in their list
         try:
             jobs = build(dict(cfg, _workdir=str(workdir))).fetch()
             out.extend(jobs)
             found[cfg["id"]] = len(jobs)
+            db.record_source_result(cfg["id"], len(jobs))
         except Exception as exc:
             found[cfg["id"]] = f"{type(exc).__name__}: {exc}"
+            db.record_source_result(cfg["id"], 0, str(exc))
             log.warning("keyword source %s failed: %s", cfg["id"], exc)
     stats["users"][cand.user_id]["keyword_queries"] = found
     stats["keyword_raw"] = stats.get("keyword_raw", 0) + len(out)

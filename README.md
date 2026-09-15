@@ -78,9 +78,9 @@ Change any of this later and every stored job is re-scored on the next scan, wit
 
 Nothing to do up front: the shipped list of job boards and company career pages works as is, and every scan discovers more company boards from the postings it finds.
 
-To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers page — any URL. Most company career pages are a job board underneath (Greenhouse, Lever, Ashby or Workday), even when the page hides it behind JavaScript; the app finds the board, checks it answers, and registers it, so you get every opening, structured, with its own apply link. A page with no board behind it is registered as a web page: on every scan it is rendered in a headless browser and the model reads the text to extract the roles it lists. The same section lets you switch any source off, or remove one that only produces noise.
+To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers page — any URL. Most company career pages are a job board underneath (Greenhouse, Lever, Ashby or Workday), even when the page hides it behind JavaScript; the app finds the board, checks it answers, and registers it, so you get every opening, structured, with its own apply link. A page with no board behind it is registered as a web page: on every scan it is rendered in a headless browser and the model reads the text to extract the roles it lists. The list is yours: switching a source off hides its postings from you (not the ones you already shortlisted or applied to) and, if nobody else follows it, stops it being fetched. The searches the app runs from your own CV's vocabulary appear in the list too, so you can switch off one that only produces noise.
 
-`config/sources.yaml` is the seed list used on a fresh install; edit it if you want companies followed from day one. Whether a source is on or off is decided in the web app and is not overwritten by the file.
+`config/sources.yaml` is the seed list used on a fresh install, followed by every account by default; edit it if you want companies followed from day one. Whether you follow a source is decided in the web app and is not overwritten by the file.
 
 ### The model — `config/settings.yaml`
 
@@ -164,7 +164,7 @@ Optionally, in the Cloudflare dashboard, Zero Trust → Access → Applications,
 
 ### More than one person
 
-The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own CV, notes, preferences, shortlist, applied list and dismissals, and is scored against their own; the postings are shared. A scan fetches once for everyone, then scores for each person whose profile is complete — one person with a finished profile is enough for scans to start; the others join as they complete theirs. The sources and the scan schedule are the installation's, so only the admin edits them; making sources per person is the next step (see `multiuser-plan.md`).
+The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own CV, notes, preferences, shortlist, applied list and dismissals, and is scored against their own; the postings are shared. A scan fetches once for everyone, then scores for each person whose profile is complete — one person with a finished profile is enough for scans to start; the others join as they complete theirs. Sources are shared but followed per person: a company one of you adds is fetched once and shown to whoever follows it, and boards discovered from a posting are followed by whoever follows the board the posting came from — one person's interests never leak into another's list. The scan schedule is the installation's, so only the admin edits it.
 
 A forgotten password cannot be recovered, only replaced: the admin sets a new one from *Users*, which logs that person out everywhere.
 
@@ -189,7 +189,7 @@ Edit, then `./docker/dock.sh jobfinder stop` and `start` again.
 
 ### Starting over
 
-At the bottom of ⚙ Settings, in red: **Delete all jobs** clears every posting, score, decision and run but keeps your sources, CV, notes and preferences, so the next scan starts the search from scratch with the same setup. **Reset everything** also drops the sources back to the seed list. Both make you type `DELETE` and refuse to run during a scan. Neither touches the files.
+At the bottom of ⚙ Settings, in red: **Delete all jobs** clears every posting, score, decision and run but keeps the sources, accounts, CVs, notes and preferences, so the next scan starts the search from scratch with the same setup. **Reset everything** also drops the sources back to the seed list. Both make you type `DELETE` and refuse to run during a scan. Neither touches the files.
 
 ## Tests
 

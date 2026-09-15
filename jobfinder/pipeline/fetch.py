@@ -75,15 +75,20 @@ def normalize(job: RawJob) -> NormalizedJob:
 def store(jobs: list[RawJob], limit: int) -> dict[str, Any]:
     """Normalise, dedupe and persist. Returns counts."""
     new_ids: list[int] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}          # fingerprint -> job id, within this batch
     stored = 0
     with db.connect() as conn:
         for raw in jobs[:limit]:
             job = normalize(raw)
-            if not job.title or job.fingerprint in seen:
+            if not job.title:
                 continue
-            seen.add(job.fingerprint)
+            if job.fingerprint in seen:
+                # The same posting from another board: one job, one more source,
+                # so the followers of that board see it too.
+                db.add_job_source(conn, seen[job.fingerprint], job.source_id)
+                continue
             job_id, is_new = db.upsert_job(conn, job)
+            seen[job.fingerprint] = job_id
             stored += 1
             if is_new:
                 new_ids.append(job_id)

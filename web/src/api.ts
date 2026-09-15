@@ -118,7 +118,7 @@ export async function uploadCv(file: File): Promise<Profile & { saved: string }>
 
 export const getSources = () => request<{ sources: Source[] }>('/sources').then((r) => r.sources)
 export const addSource = (url: string) =>
-  request<{ source_id: string; type: string; open_positions: number }>('/sources', { method: 'POST', body: JSON.stringify({ url }) })
+  request<{ source_id: string; type?: string; open_positions: number | null; note: string }>('/sources', { method: 'POST', body: JSON.stringify({ url }) })
 export const setSourceEnabled = (id: string, enabled: boolean) =>
   request<{ ok: true }>(`/sources/${encodeURIComponent(id)}/enabled?enabled=${enabled}`, { method: 'POST' })
 export const deleteSource = (id: string) =>
