@@ -43,8 +43,11 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
 
 ARG USER_UID=1000
 ARG USER_GID=1000
-RUN groupadd -g ${USER_GID} developer \
- && useradd --create-home --shell /bin/bash --uid ${USER_UID} --gid ${USER_GID} developer
+# The host's gid may already be a system group in the image (20 is dialout on
+# a Mac's host, 100 is users); the number is all the bind mounts care about,
+# so reuse it rather than fail.
+RUN getent group ${USER_GID} >/dev/null || groupadd -g ${USER_GID} developer
+RUN useradd --create-home --shell /bin/bash --uid ${USER_UID} --gid ${USER_GID} developer
 
 USER developer
 ENV HOME=/home/developer
