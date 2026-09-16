@@ -44,6 +44,11 @@ function display_usage() {
 # holds it, so every command has to run from there.
 cd "$(dirname "$0")"
 
+# The state directories are git-ignored, so a fresh clone does not have them.
+# Create them here, as the host user: if Docker creates them for the bind
+# mounts instead, they are owned by root and the container cannot write.
+mkdir -p ../data ../runs
+
 if [ "$#" -lt 2 ]; then
     echo "Missing required arguments."
     display_usage

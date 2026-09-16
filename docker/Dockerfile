@@ -19,12 +19,13 @@ FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 LABEL name="find-me-a-freaking-job"
 
 # git, curl: opencode and its installer. The rest: building llama.cpp with
-# CUDA and with libcurl for --hf-repo model downloads.
+# CUDA and with OpenSSL, which its HTTP client needs to download models from
+# Hugging Face over HTTPS (--hf-repo).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git curl ca-certificates \
       python3 python3-venv python3-pip \
-      build-essential cmake ninja-build pkg-config libcurl4-openssl-dev \
+      build-essential cmake ninja-build pkg-config libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Chromium's system libraries, for rendering careers pages that build their
