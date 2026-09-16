@@ -24,14 +24,17 @@ import logging
 import re
 import urllib.parse as urlparse
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from . import db
-from .config import preferences, settings
-from .models import ProfileDigest, RawJob, SearchQueries
+from .config import settings
+from .models import RawJob, SearchQueries
 from .opencode import OpencodeError, run_session
 from .prompts import queries_prompt
 from .sources.base import fetch_url
+
+if TYPE_CHECKING:
+    from .pipeline.profile import Candidate
 
 log = logging.getLogger(__name__)
 
@@ -147,8 +150,11 @@ def probe_ats_by_name(url: str) -> tuple[str, str] | None:
     return None
 
 
-def _register(stype: str, slug: str, via: str, budget: list[int]) -> str | None:
-    """Register one discovered board. `budget` is a one-element mutable counter."""
+def _register(stype: str, slug: str, via: str, budget: list[int], followers: Iterable[int]) -> str | None:
+    """Register one discovered board, followed by `followers` -- the people
+    who follow whatever it was found through, so discovery never leaks one
+    person's interests into another's list. `budget` is a one-element
+    mutable counter."""
     if budget[0] <= 0:
         return None
     cfg = source_config_for(stype, slug) | {"discovered_from": via}
@@ -156,7 +162,7 @@ def _register(stype: str, slug: str, via: str, budget: list[int]) -> str | None:
     if db.seen_discovery(f"source:{source_id}"):
         return None
     db.mark_discovery(f"source:{source_id}", "source", via)
-    if db.upsert_source(cfg, origin="discovered"):
+    if db.upsert_source(cfg, origin="discovered", followers=list(followers)):
         budget[0] -= 1
         log.info("discovered %s board %r (via %s)", stype, slug, via)
         return source_id
@@ -173,13 +179,17 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
         return []
     budget = [cfg.max_new_boards_per_run]
     found: list[str] = []
+    followers_of: dict[str, list[int]] = {}
     for job in jobs:
         if budget[0] <= 0:
             break
+        if job.source_id not in followers_of:
+            followers_of[job.source_id] = db.source_followers(job.source_id)
+        heirs = followers_of[job.source_id]
         for candidate in (job.apply_url, job.url):
             hit = detect_ats(candidate)
             if hit:
-                sid = _register(*hit, via=f"harvest:{job.source_id}", budget=budget)
+                sid = _register(*hit, via=f"harvest:{job.source_id}", budget=budget, followers=heirs)
                 if sid:
                     found.append(sid)
                 break
@@ -188,7 +198,7 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
             for match in re.finditer(r"https?://[^\s\"'<>)]+", job.description[:8000]):
                 hit = detect_ats(match.group(0))
                 if hit:
-                    sid = _register(*hit, via=f"harvest-body:{job.source_id}", budget=budget)
+                    sid = _register(*hit, via=f"harvest-body:{job.source_id}", budget=budget, followers=heirs)
                     if sid:
                         found.append(sid)
                     break
@@ -198,30 +208,62 @@ def harvest(jobs: Iterable[RawJob]) -> list[str]:
 # --------------------------------------------------------------------------
 # B. keyword queries against filterable aggregators
 # --------------------------------------------------------------------------
+# Jobicy's region filter. Anything not here is queried without one
+# (Jobicy's "anywhere"), which returns remote roles from everywhere.
 JOBICY_GEOS = {
-    "poland": "europe", "germany": "europe", "france": "europe", "spain": "europe",
-    "eu": "europe", "europe": "europe", "us": "usa", "usa": "usa",
-    "united states": "usa", "uk": "uk", "canada": "canada",
+    "europe": "europe", "eu": "europe", "european union": "europe", "emea": "europe",
+    "poland": "europe", "germany": "europe", "france": "europe", "spain": "europe", "italy": "europe",
+    "ireland": "europe", "netherlands": "europe", "portugal": "europe", "austria": "europe",
+    "belgium": "europe", "sweden": "europe", "denmark": "europe", "finland": "europe", "norway": "europe",
+    "switzerland": "europe", "czech republic": "europe", "czechia": "europe", "romania": "europe",
+    "greece": "europe", "hungary": "europe",
+    "us": "usa", "usa": "usa", "united states": "usa", "united states of america": "usa", "north america": "usa",
+    "uk": "uk", "united kingdom": "uk", "great britain": "uk", "england": "uk",
+    "canada": "canada", "australia": "australia", "asia": "asia", "latam": "latam", "latin america": "latam",
 }
+NO_REGION = "anywhere"                  # Jobicy's word for no region filter
 
 
-def keyword_sources(digest: ProfileDigest, limit: int = 6) -> list[dict[str, Any]]:
-    """Ephemeral per-run query sources built from the CV's own vocabulary."""
-    prefs = preferences()
+def jobicy_geo(rule: Any) -> str | None:
+    """The Jobicy region for a location rule, trying country then region,
+    whole and by word ("EU / EEA" -> europe)."""
+    for raw in (rule.country, rule.region):
+        if not raw:
+            continue
+        key = str(raw).strip().lower()
+        if key in JOBICY_GEOS:
+            return JOBICY_GEOS[key]
+        for word in re.split(r"[\s/,()]+", key):
+            if word in JOBICY_GEOS:
+                return JOBICY_GEOS[word]
+    return None
+
+
+def geo_label(geo: str) -> str:
+    return geo
+
+
+def keyword_sources(cand: Candidate, limit: int = 6) -> list[dict[str, Any]]:
+    """Query sources built from one user's CV vocabulary. Registered as
+    sources (origin 'keyword') followed by that user alone, so they show in
+    their list, can be switched off, and boards harvested from their results
+    are theirs; fetched per user by the keyword step (plan, Decision 4)."""
+    prefs, digest = cand.prefs, cand.digest
+    assert digest is not None
     terms: list[str] = []
     for term in (digest.core_skills + digest.search_keywords + prefs.must_have):
-        t = re.sub(r"[^a-z0-9+#.-]", "", str(term).lower())
+        # "Head of Product" -> head-of-product, as Jobicy spells its tags.
+        t = re.sub(r"-+", "-", re.sub(r"[^a-z0-9+#.-]", "-", str(term).strip().lower())).strip("-")
         # Jobicy rejects very short tags with a 400.
         if 2 < len(t) <= 20 and t not in terms:
             terms.append(t)
 
     geos: list[str] = []
     for rule in prefs.location_rules:
-        key = (rule.country or rule.region or "").lower()
-        geo = JOBICY_GEOS.get(key)
+        geo = jobicy_geo(rule)
         if geo and geo not in geos:
             geos.append(geo)
-    geos = geos or ["anywhere"]
+    geos = geos or [NO_REGION]
 
     out: list[dict[str, Any]] = []
     for term in terms[:limit]:
@@ -233,7 +275,9 @@ def keyword_sources(digest: ProfileDigest, limit: int = 6) -> list[dict[str, Any
             "geo": geo,
             "count": 50,
             "enabled": True,
-            "_ephemeral": True,
+            "company": f'"{term}" · {geo_label(geo)}',
+            "keyword": term,
+            "region": geo_label(geo),
         })
     return out
 
@@ -288,9 +332,9 @@ def _previous_queries() -> list[str]:
     return [r["detail"] for r in rows]
 
 
-def _fallback_queries() -> list[str]:
+def _fallback_queries(cand: Candidate) -> list[str]:
     out = []
-    for title in (preferences().titles[:3] or ["Software Engineer"]):
+    for title in (cand.prefs.titles[:3] or ["Software Engineer"]):
         out += [
             f'site:boards.greenhouse.io "{title}" remote',
             f'site:jobs.lever.co "{title}" remote',
@@ -299,31 +343,31 @@ def _fallback_queries() -> list[str]:
     return out
 
 
-def generate_queries(digest: ProfileDigest, workdir: Path, n: int) -> list[str]:
+def generate_queries(cand: Candidate, workdir: Path, n: int) -> list[str]:
     tried = _previous_queries()
     queries: list[str] = []
     try:
         result = run_session(
-            queries_prompt(digest, n, tried), workdir / "queries", SearchQueries,
+            queries_prompt(cand, n, tried), workdir / f"queries-{cand.user_id}", SearchQueries,
             title="discovery queries",
         )
         queries = [q.strip() for q in result.queries if q and q.strip()]
     except OpencodeError as exc:
         log.warning("query generation failed (%s); falling back", exc)
 
-    queries = queries or _fallback_queries()
+    queries = queries or _fallback_queries(cand)
     fresh = [q for q in queries if q not in set(tried)]
     return (fresh or queries)[:n]
 
 
-def run_websearch(digest: ProfileDigest, workdir: Path) -> dict[str, Any]:
+def run_websearch(cand: Candidate, workdir: Path) -> dict[str, Any]:
     cfg = settings().discovery
     stats: dict[str, Any] = {"queries": 0, "results": 0, "new_sources": []}
     if not cfg.enabled:
         return stats
     budget = [cfg.max_new_boards_per_run]
 
-    for query in generate_queries(digest, workdir, cfg.queries_per_run):
+    for query in generate_queries(cand, workdir, cfg.queries_per_run):
         if budget[0] <= 0:
             break
         db.mark_discovery(f"query:{query}", "query", query)
@@ -333,7 +377,7 @@ def run_websearch(digest: ProfileDigest, workdir: Path) -> dict[str, Any]:
         for url in urls:
             hit = detect_ats(url)
             if hit:
-                sid = _register(*hit, via=f"search:{query}"[:120], budget=budget)
+                sid = _register(*hit, via=f"search:{query}"[:120], budget=budget, followers=[cand.user_id])
                 if sid:
                     stats["new_sources"].append(sid)
 

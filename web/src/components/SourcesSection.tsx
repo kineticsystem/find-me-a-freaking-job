@@ -6,7 +6,7 @@ interface Props {
   notify: (text: string, error?: boolean) => void
 }
 
-const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'from config', discovered: 'discovered', user: 'added by you' }
+const ORIGIN_LABEL: Record<Source['origin'], string> = { config: 'default', discovered: 'discovered', user: 'added by hand', keyword: 'keyword from your CV' }
 
 const company = (s: Source) => (typeof s.config.company === 'string' && s.config.company) || (typeof s.config.slug === 'string' && s.config.slug) || s.id
 
@@ -25,7 +25,7 @@ export function SourcesSection({ notify }: Props) {
     setAdding(true)
     try {
       const r = await api.addSource(url.trim())
-      notify(`Added ${r.source_id} (${r.type}): ${r.open_positions} open positions, fetched on the next scan`)
+      notify(r.open_positions == null ? `Added ${r.source_id}: ${r.note}` : `Added ${r.source_id} (${r.type}): ${r.open_positions} open positions, fetched on the next scan`)
       setUrl('')
       await load()
     } catch (e) {
@@ -38,8 +38,8 @@ export function SourcesSection({ notify }: Props) {
   const toggle = async (s: Source) => {
     setBusy(s.id)
     try {
-      await api.setSourceEnabled(s.id, !s.enabled)
-      setSources((list) => list?.map((x) => (x.id === s.id ? { ...x, enabled: s.enabled ? 0 : 1, fail_count: 0 } : x)) ?? null)
+      await api.setSourceEnabled(s.id, !s.following)
+      setSources((list) => list?.map((x) => (x.id === s.id ? { ...x, following: s.following ? 0 : 1, enabled: s.following ? x.enabled : 1, fail_count: s.following ? x.fail_count : 0 } : x)) ?? null)
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Could not change', true)
     } finally {
@@ -52,7 +52,7 @@ export function SourcesSection({ notify }: Props) {
     try {
       await api.deleteSource(s.id)
       setSources((list) => list?.filter((x) => x.id !== s.id) ?? null)
-      notify(`Removed ${s.id}; its jobs stay`)
+      notify(`Removed ${s.id} from your list; its jobs stay`)
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Could not remove', true)
     } finally {
@@ -62,11 +62,11 @@ export function SourcesSection({ notify }: Props) {
 
   // The ones you added yourself first, then by how much they yield. Not by
   // on/off: a row must stay put when its toggle is clicked.
-  const rank: Record<Source['origin'], number> = { user: 0, config: 1, discovered: 2 }
+  const rank: Record<Source['origin'], number> = { user: 0, keyword: 1, config: 2, discovered: 3 }
   const sorted = (sources ?? []).slice().sort((a, b) =>
     (rank[a.origin] - rank[b.origin]) || (b.jobs_stored - a.jobs_stored) || a.id.localeCompare(b.id))
   const shown = showAll ? sorted : sorted.slice(0, 12)
-  const on = (sources ?? []).filter((s) => s.enabled).length
+  const on = (sources ?? []).filter((s) => s.following).length
 
   return (
     <div className="profile sources">
@@ -80,17 +80,22 @@ export function SourcesSection({ notify }: Props) {
         <button className="btn btn-sm btn-primary" disabled={adding || !url.trim()} onClick={onAdd}>{adding ? 'Checking…' : 'Add'}</button>
       </div>
       <div className="settings-hint">
-        e.g. <code>boards.greenhouse.io/stripe</code>, <code>jobs.lever.co/spotify</code>, <code>jobs.ashbyhq.com/linear</code>. The board is checked before it is added. Boards are also discovered automatically from the postings each scan finds.
+        e.g. <code>boards.greenhouse.io/stripe</code>, <code>jobs.lever.co/spotify</code>, <code>jobs.ashbyhq.com/linear</code>. The board is checked before it is added. Boards are also discovered automatically from the postings each scan finds. The list is yours: switching a source off hides its postings from you (not what you already shortlisted) and, if nobody else follows it, stops it being fetched.
       </div>
 
       {sources === null ? <div className="settings-hint">Loading…</div> : (
         <>
-          <div className="settings-hint">{on} of {sources.length} sources on</div>
+          {sources.some((s) => s.origin === 'keyword') && (
+            <div className="settings-hint">
+              <strong>Keyword searches</strong> — on each scan the app also queries Jobicy, a job board that can be searched, with terms taken from your CV and your must-haves, filtered to your region where Jobicy has one (Europe, USA, UK, Canada…); <em>anywhere</em> means no region filter, remote roles from everywhere. Switch off any that bring noise; they are rebuilt when your CV changes.
+            </div>
+          )}
+          <div className="settings-hint">You follow {on} of {sources.length} sources</div>
           <ul className="source-list">
             {shown.map((s) => (
-              <li key={s.id} className={s.enabled ? '' : 'off'}>
+              <li key={s.id} className={s.following ? '' : 'off'}>
                 <label className="source-main">
-                  <input type="checkbox" checked={!!s.enabled} disabled={busy === s.id} onChange={() => toggle(s)} />
+                  <input type="checkbox" checked={!!s.following} disabled={busy === s.id} onChange={() => toggle(s)} />
                   <span className="source-name">{company(s)}</span>
                   <span className="chip">{s.type}</span>
                   <span className="chip" data-kind="origin">{ORIGIN_LABEL[s.origin]}</span>
@@ -100,7 +105,7 @@ export function SourcesSection({ notify }: Props) {
                   {s.last_error ? <span className="error"> · failing: {s.last_error.slice(0, 60)}</span> : ''}
                   {s.fail_count >= 5 ? <span className="error"> · paused after {s.fail_count} failures</span> : ''}
                 </span>
-                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source; its jobs stay">Remove</button>}
+                {s.deletable && <button className="btn btn-sm btn-danger" disabled={busy === s.id} onClick={() => remove(s)} title="Remove this source from your list; its jobs stay">Remove</button>}
               </li>
             ))}
           </ul>

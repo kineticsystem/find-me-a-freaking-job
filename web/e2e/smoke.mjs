@@ -18,15 +18,28 @@ const check = (cond, msg) => {
 const browser = await chromium.launch()
 const errors = []
 
-async function run(name, viewport, body) {
+// The test instance's accounts (created by `seed-demo`). The token goes in the
+// Authorization header and the page gets it through localStorage, as the app does.
+const ADMIN = { email: 'admin@example.com', password: 'demo-admin-password' }
+const USER = { email: 'user@example.com', password: 'demo-user-password' }
+async function tokenFor(creds) {
+  const r = await fetch(BASE + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(creds) })
+  if (!r.ok) throw new Error(`login failed for ${creds.email}: ${r.status}`)
+  return (await r.json()).token
+}
+const TOKEN = await tokenFor(ADMIN)
+const api = (path, init = {}) => fetch(BASE + path, { ...init, headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers ?? {}) } })
+
+async function run(name, viewport, body, token = TOKEN) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2 })
+  await ctx.addInitScript((t) => { if (t) localStorage.setItem('jobfinder.token', t); else localStorage.removeItem('jobfinder.token') }, token)
   const page = await ctx.newPage()
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
   // 4xx responses the suite provokes on purpose (a refused URL) are logged by
   // the browser as console errors; they are asserted elsewhere, not bugs.
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d/.test(m.text())) errors.push(`${name}: ${m.text()}`) })
   await page.goto(BASE + '/')
-  await page.waitForSelector('.job', { timeout: 15000 })
+  if (token) await page.waitForSelector('.job', { timeout: 15000 })
   try { await body(page) } finally { await ctx.close() }
 }
 
@@ -133,13 +146,13 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   const shownReason = await dCard.locator('.job-meta.reason').textContent()
   check(shownReason.includes('agency / consultancy') && shownReason.includes('on-site') && shownReason.includes('e2e test reason'),
         `dismissed view: reason shown (${shownReason.trim()})`)
-  const rej = await (await fetch(BASE + '/rejections')).json()
+  const rej = await (await api('/rejections')).json()
   check(rej.rejections.some((r) => r.reason.includes('e2e test reason')), 'API /rejections: reason recorded for the model')
   await dCard.locator('button:has-text("Restore")').click()
   await dCard.waitFor({ state: 'detached' })   // other jobs may genuinely be dismissed
   await page.selectOption(`.filters select >> nth=${SELECT.status}`, '')
   await waitTotal(page, all)
-  const rej2 = await (await fetch(BASE + '/rejections')).json()
+  const rej2 = await (await api('/rejections')).json()
   check(!rej2.rejections.some((r) => r.reason.includes('e2e test reason')), 'restore: reason cleared, total back to ' + all)
 
   // settings: the interval form, with PATCH /settings intercepted so the
@@ -161,7 +174,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.click('.settings button:has-text("Save")'); await page.waitForSelector('.toast:has-text("every 6 hours")')
   check(patches.at(-1).interval_minutes === 360, 'settings: units convert (6 hours -> 360)')
   await page.unroute('**/settings')
-  check((await (await fetch(BASE + '/settings')).json()).interval_minutes === (await (await fetch(BASE + '/settings')).json()).interval_minutes, 'settings: server untouched by the test')
+  check((await (await api('/settings')).json()).interval_minutes === (await (await api('/settings')).json()).interval_minutes, 'settings: server untouched by the test')
 
   // theme: a per-browser choice, applied at once and kept across reloads
   const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
@@ -179,20 +192,22 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   await page.waitForSelector('.settings-hint:has-text("Next scan")')
 
   // profile section: shows the real CV and notes; never modifies them here
-  const prof = await (await fetch(BASE + '/profile')).json()
+  const prof = await (await api('/profile')).json()
   await page.waitForSelector('.profile-cv strong')
-  check((await page.locator('.profile-cv').textContent()).includes(prof.cv?.name ?? '<none>'), `profile: shows the CV on disk (${prof.cv?.name})`)
-  check((await page.inputValue('#notes')) === prof.notes, 'profile: notes textarea holds notes.md')
+  check((await page.locator('.profile-cv').textContent()).includes(prof.cv?.name ?? '<none>'), `profile: shows the stored CV (${prof.cv?.name})`)
+  check((await page.inputValue('#notes')) === prof.notes, 'profile: notes textarea holds the stored notes')
   check(await page.locator('button:has-text("Save notes")').isDisabled(), 'profile: Save notes disabled until edited')
   await page.locator('#notes').press('End'); await page.keyboard.type(' x')
   check(!(await page.locator('button:has-text("Save notes")').isDisabled()), 'profile: editing enables Save notes')
   await page.click('button:has-text("Discard")')
   check((await page.inputValue('#notes')) === prof.notes, 'profile: Discard restores')
   check(await page.locator('input[type=file]').count() === 1 && (await page.getAttribute('input[type=file]', 'accept')).includes('.pdf'), 'profile: CV upload accepts pdf/md/txt')
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('.profile button:has-text("Download")')])
+  check(download.suggestedFilename() === prof.cv.name, `profile: Download hands back ${download.suggestedFilename()}`)
 
   // preferences: the form reflects the file; never saved here (a save would
   // rewrite the real preferences.yaml)
-  const prefs = (await (await fetch(BASE + '/preferences')).json())
+  const prefs = (await (await api('/preferences')).json())
   await page.waitForSelector('.prefs .chip-value')
   const titleChips = await page.locator('.prefs .chip-value').allTextContents()
   check(prefs.preferences.titles.every((t) => titleChips.some((c) => c.startsWith(t))), 'preferences: title chips match the file')
@@ -208,22 +223,22 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
 
   // sources: add a real board by URL (checked live), toggle it, remove it
   await page.waitForSelector('.source-list li')
-  await fetch(BASE + '/sources/as-replit', { method: 'DELETE' })  // leftover from an aborted run, if any
-  const nBefore = (await (await fetch(BASE + '/sources')).json()).sources.length
+  await api('/sources/as-replit', { method: 'DELETE' })  // leftover from an aborted run, if any
+  const nBefore = (await (await api('/sources')).json()).sources.length
   await page.fill('input[aria-label="careers URL"]', 'https://jobs.ashbyhq.com/replit')
   await page.click('.sources button:has-text("Add")')
   await page.waitForSelector('.toast:has-text("Added as-replit")', { timeout: 30000 })
-  const srcAfter = (await (await fetch(BASE + '/sources')).json()).sources
+  const srcAfter = (await (await api('/sources')).json()).sources
   const added = srcAfter.find((s) => s.id === 'as-replit')
-  check(srcAfter.length === nBefore + 1 && added?.origin === 'user' && added.enabled === 1, 'sources: board added from a careers URL after a live check')
+  check(srcAfter.length === nBefore + 1 && added?.origin === 'user' && added.following === 1 && added.deletable === true, 'sources: board added from a careers URL after a live check, followed by me')
   await page.waitForSelector('.source-list li:has-text("Replit")')
   const row = page.locator('.source-list li:has-text("Replit")')
   await row.locator('input[type=checkbox]').click()
   await row.locator('input[type=checkbox]:not(:checked)').waitFor()   // this row, not any switched-off row
-  check((await (await fetch(BASE + '/sources')).json()).sources.find((s) => s.id === 'as-replit').enabled === 0, 'sources: toggle off persists')
+  check((await (await api('/sources')).json()).sources.find((s) => s.id === 'as-replit').following === 0, 'sources: toggle off persists')
   await row.locator('button:has-text("Remove")').click()
-  await page.waitForSelector('.toast:has-text("Removed as-replit")')
-  check(!(await (await fetch(BASE + '/sources')).json()).sources.some((s) => s.id === 'as-replit'), 'sources: removed')
+  await page.waitForSelector('.toast:has-text("Removed as-replit from your list")')
+  check(!(await (await api('/sources')).json()).sources.some((s) => s.id === 'as-replit'), 'sources: removed')
   // a host that does not exist: nothing to fetch, render or probe
   // (example.com is not a safe choice -- a Greenhouse board named "example" exists)
   await page.fill('input[aria-label="careers URL"]', 'https://careers.zzqx-nonexistent-domain.invalid/jobs')
@@ -242,7 +257,7 @@ await run('desktop', { width: 1280, height: 800 }, async (page) => {
   check(!(await confirmBtn.isDisabled()), 'danger: exactly DELETE unlocks it')
   await page.click('.danger-confirm button:has-text("Cancel")')
   check(!(await page.locator('.danger-confirm').count()), 'danger: Cancel closes it')
-  const wrong = await fetch(BASE + '/reset/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: 'delete' }) })
+  const wrong = await api('/reset/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: 'delete' }) })
   check(wrong.status === 400 && (await total(page)) === all, 'danger: API refuses the wrong word, nothing deleted')
   await page.click('button:has-text("Reset everything")')
   await page.waitForSelector('.danger-confirm')
@@ -282,6 +297,69 @@ await run('phone', { width: 390, height: 844 }, async (page) => {
   await page.screenshot({ path: `${OUT}/phone-filters.png` })
   const tap = await page.locator('.job-actions .btn').first().boundingBox()
   check(tap && tap.height >= 40, `phone: action buttons tappable (${Math.round(tap?.height ?? 0)}px tall)`)
+})
+
+// ---------------------------------------------------------------- login
+await run('login', { width: 1000, height: 800 }, async (page) => {
+  await page.waitForSelector('form[aria-label="Log in"]')
+  await page.screenshot({ path: `${OUT}/login.png` })
+  check(!(await page.locator('.job').count()), 'login: nothing shown without a token')
+  await page.fill('input[type="email"]', ADMIN.email)
+  await page.fill('input[type="password"]', 'wrong-password')
+  await page.click('button[type="submit"]')
+  await page.waitForSelector('[role="alert"]')
+  check((await page.locator('[role="alert"]').textContent()).includes('wrong'), 'login: wrong password says so')
+  await page.fill('input[type="password"]', ADMIN.password)
+  await page.click('button[type="submit"]')
+  await page.waitForSelector('.job', { timeout: 15000 })
+  check(await page.evaluate(() => !!localStorage.getItem('jobfinder.token')), 'login: token kept in localStorage')
+  check(!page.url().includes('token'), 'login: token never in the URL')
+  // log out from the Account section: back to the login form, token gone
+  await page.click('button[aria-label="Settings"]')
+  await page.waitForSelector('.account')
+  await page.click('.account button:has-text("Log out")')
+  await page.waitForSelector('form[aria-label="Log in"]')
+  check(await page.evaluate(() => !localStorage.getItem('jobfinder.token')), 'logout: token removed')
+}, null)
+
+// a plain user: their own decisions, no admin controls
+await run('non-admin', { width: 1000, height: 800 }, async (page) => {
+  check(!(await page.locator('.btn-scan').count()), 'user: no Scan button')
+  await page.waitForSelector('.banner.setup', { timeout: 10000 }).catch(() => {})
+  check((await page.locator('.banner.setup').count()) === 1, 'user: their own setup checklist (no CV yet)')
+  await page.click('button[aria-label="Settings"]')
+  await page.waitForSelector('.prefs')
+  check(!(await page.locator('.users').count()) && !(await page.locator('.danger').count()), 'user: no Users or Danger zone')
+  await page.waitForSelector('.source-list li')
+  check((await page.locator('.sources .settings-hint:has-text("You follow")').count()) === 1, 'user: has their own source list')
+  check((await page.locator('.profile:not(.sources):not(.users):not(.danger):not(.account) .settings-section').first().textContent()) === 'Your profile', 'user: has their own Profile section')
+  check((await page.locator('.account').textContent()).includes(USER.email), 'user: Account shows their email')
+  await page.click('button[aria-label="Settings"]')
+  const card = freshCard(page)
+  const id = await card.getAttribute('data-id')
+  await card.locator('button:has-text("Shortlist")').click()
+  await page.waitForSelector(`.job[data-id="${id}"] .chip[data-kind=status][data-value=shortlisted]`)
+  const asAdmin = await (await api(`/jobs/${id}`)).json()
+  check(asAdmin.status === 'new', 'user: their shortlist is not the admin\'s')
+  const userToken = await tokenFor(USER)
+  await fetch(BASE + `/jobs/${id}/state`, { method: 'PATCH', headers: { authorization: `Bearer ${userToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ status: 'new' }) })
+  check((await fetch(BASE + '/settings', { headers: { authorization: `Bearer ${userToken}` } })).status === 403, 'user: settings API is 403')
+}, await tokenFor(USER))
+
+// admin: the Users section adds and removes an account
+await run('users', { width: 1000, height: 800 }, async (page) => {
+  await page.click('button[aria-label="Settings"]')
+  await page.waitForSelector('.users')
+  await page.fill('.users input[type="email"]', 'temp@example.com')
+  await page.fill('.users input[type="password"]', 'temp-password-1')
+  await page.click('.users button:has-text("Add user")')
+  await page.waitForSelector('.users-row:has-text("temp@example.com")')
+  check(await tokenFor({ email: 'temp@example.com', password: 'temp-password-1' }), 'users: new account can log in')
+  page.on('dialog', (d) => d.accept())
+  await page.locator('.users-row:has-text("temp@example.com") button:has-text("Remove")').click()
+  await page.waitForFunction(() => !document.querySelector('.users-row')?.parentElement?.textContent.includes('temp@example.com'))
+  check((await fetch(BASE + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'temp@example.com', password: 'temp-password-1' }) })).status === 401, 'users: removed account cannot log in')
+  check(!(await page.locator('.users-row:has-text("' + ADMIN.email + '") button:has-text("Remove")').count()), 'users: cannot remove yourself')
 })
 
 await browser.close()

@@ -15,7 +15,6 @@ from ..config import settings
 from ..models import RawJob
 from ..sources import build
 from . import deepdive, digest as digest_mod, extract, fetch, profile, progress, triage
-from .criteria import criteria_hash
 
 log = logging.getLogger(__name__)
 
@@ -42,13 +41,15 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         return {"skipped": "already running"}
 
     # No profile, no scan at all -- not even fetching. Postings collected
-    # before the CV, notes and preferences exist could not be judged, and the
-    # user asked for the system to stay idle until it knows who it works for.
-    ready = profile.readiness()
-    if not ready["ready"]:
+    # before a CV, notes and preferences exist could not be judged, and the
+    # system stays idle until it knows who it works for. With several users,
+    # one complete profile is enough to scan; the others are skipped.
+    cands = profile.candidates()
+    if not cands:
         _run_lock.release()
-        missing = [k for k in ("cv", "notes", "preferences") if not ready[k]]
-        log.warning("not scanning: set-up incomplete, missing %s (see the web app)", ", ".join(missing))
+        first = profile.readiness(db.DEFAULT_USER_ID)
+        missing = [k for k in ("cv", "notes", "preferences") if not first[k]]
+        log.warning("not scanning: no user has a complete profile (see the web app)")
         return {"skipped": "not set up", "not_ready": missing}
 
     started = time.time()
@@ -75,24 +76,28 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
                 status = "partial"
         stats["skip_llm"] = skip_llm
 
-        # -- profile -----------------------------------------------------
-        digest = None
+        # -- profiles ----------------------------------------------------
+        # One digest per user; the model builds it only when the CV or the
+        # notes changed. Without a model, users with no stored digest are
+        # fetched for but not scored.
         if not skip_llm:
-            progress.stage("profile", "reading your CV and notes")
-            digest = profile.load_digest(workdir)
-            stats["profile"] = digest.headline
-
-        criteria = criteria_hash(profile.profile_fingerprint())
-        stats["criteria"] = criteria
+            progress.stage("profile", "reading CVs and notes")
+            for cand in cands:
+                profile.load_digest(cand, workdir)
+        stats["users"] = {c.user_id: {"name": c.name, "criteria": c.criteria, "profile": c.digest.headline if c.digest else None} for c in cands}
+        stats["criteria"] = cands[0].criteria   # kept for older readers of the stats
+        with_digest = [c for c in cands if c.digest]
 
         # -- fetch (persistent sources + ephemeral keyword queries) ------
+        # Keyless sources once for everyone; keyword queries per user.
         progress.stage("fetch", "fetching postings from every source")
-        raw, fetch_stats = fetch.fetch_all(workdir, digest)
+        raw, fetch_stats = fetch.fetch_all(workdir, with_digest[0].digest if with_digest else None)
         stats.update(fetch_stats)
         progress.note(fetched=len(raw), sources=fetch_stats.get("sources_run", 0))
 
-        if digest and settings().discovery.enabled:
-            raw += _fetch_keyword_sources(digest, workdir, stats)
+        if with_digest and settings().discovery.enabled:
+            for cand in with_digest:
+                raw += _fetch_keyword_sources(cand, workdir, stats)
 
         # -- discovery channel A: harvest boards out of what we fetched --
         stats["harvested_sources"] = discovery.harvest(raw)
@@ -107,7 +112,9 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
             raw = [j for j in raw if not j.needs_extraction]
 
         # -- cheap local relevance gate ----------------------------------
-        kept, pf_stats = fetch.prefilter_jobs(raw, digest)
+        # A posting is stored if it passes the gate for at least one user;
+        # storage is shared, each user's slice is a query over it.
+        kept, pf_stats = fetch.prefilter_jobs(raw, [c.digest for c in with_digest])
         stats.update(pf_stats)
 
         # -- persist ------------------------------------------------------
@@ -116,21 +123,27 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         store_stats.pop("new_ids", None)
         stats.update(store_stats)
 
-        # -- reasoning ----------------------------------------------------
-        if not skip_llm and digest:
-            stats.update(triage.run_triage(digest, criteria, workdir, run_id))
-            if not progress.stop_requested():
-                stats.update(deepdive.run_deepdive(digest, criteria, workdir, run_id))
-            if not progress.stop_requested():
-                progress.stage("discover", "looking for new company boards")
-                stats["websearch"] = discovery.run_websearch(digest, workdir)
+        # -- reasoning, per user ------------------------------------------
+        if not skip_llm:
+            for cand in with_digest:
+                if progress.stop_requested():
+                    break
+                who = stats["users"][cand.user_id]
+                who.update(triage.run_triage(cand, workdir, run_id))
+                if not progress.stop_requested():
+                    who.update(deepdive.run_deepdive(cand, workdir, run_id))
+                if not progress.stop_requested():
+                    progress.stage("discover", f"looking for new company boards for {cand.name}")
+                    who["websearch"] = discovery.run_websearch(cand, workdir)
+            for key in ("triaged", "batches", "failed_batches", "strong", "deepdived"):
+                stats[key] = sum(int(u.get(key) or 0) for u in stats["users"].values())
         if progress.stop_requested():
             status = "stopped"
             stats["stopped"] = True
             log.info("run %d stopped on request; what was scored so far is kept", run_id)
 
         stats["duration_seconds"] = round(time.time() - started, 1)
-        digest_path = digest_mod.write_digest(workdir, run_id, criteria, stats)
+        digest_path = digest_mod.write_digest(workdir, run_id, cands, stats)
         stats["digest"] = str(digest_path)
 
         db.finish_run(run_id, status, stats)
@@ -156,18 +169,25 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         _run_lock.release()
 
 
-def _fetch_keyword_sources(digest, workdir: Path, stats: dict[str, Any]) -> list[RawJob]:
-    """Channel B: per-run keyword queries. Failures are non-fatal."""
+def _fetch_keyword_sources(cand: profile.Candidate, workdir: Path, stats: dict[str, Any]) -> list[RawJob]:
+    """Channel B: per-run keyword queries, per user. Failures are non-fatal."""
     out: list[RawJob] = []
     found: dict[str, Any] = {}
-    for cfg in discovery.keyword_sources(digest):
+    current = discovery.keyword_sources(cand)
+    db.prune_keyword_sources(cand.user_id, [c["id"] for c in current])
+    for cfg in current:
+        db.upsert_source(cfg, origin="keyword", followers=[cand.user_id])
+        if not db.follows(cand.user_id, cfg["id"]):
+            continue                                   # switched off in their list
         try:
             jobs = build(dict(cfg, _workdir=str(workdir))).fetch()
             out.extend(jobs)
             found[cfg["id"]] = len(jobs)
+            db.record_source_result(cfg["id"], len(jobs))
         except Exception as exc:
             found[cfg["id"]] = f"{type(exc).__name__}: {exc}"
+            db.record_source_result(cfg["id"], 0, str(exc))
             log.warning("keyword source %s failed: %s", cfg["id"], exc)
-    stats["keyword_queries"] = found
-    stats["keyword_raw"] = len(out)
+    stats["users"][cand.user_id]["keyword_queries"] = found
+    stats["keyword_raw"] = stats.get("keyword_raw", 0) + len(out)
     return out

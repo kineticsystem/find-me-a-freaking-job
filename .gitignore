@@ -3,10 +3,10 @@ __pycache__/
 *.pyc
 
 # Your own state: none of it belongs in the repository.
-data/
-runs/
+data/*
+runs/*
+!data/.gitkeep
+!runs/.gitkeep
 config/settings.yaml
 config/preferences.yaml
-profile/cv.*
-profile/notes.md
-profile/.cache/
+config/preferences.yaml.imported

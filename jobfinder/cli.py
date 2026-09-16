@@ -8,6 +8,7 @@ import logging
 import sys
 
 from . import db, discovery, opencode
+from .pipeline import profile
 from .config import ROOT, settings
 
 
@@ -35,7 +36,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     added = discovery.seed_from_config()
     print(f"database ready at {db.db_path()}")
     print(f"{added} source(s) registered from config/sources.yaml")
-    print(f"drop your CV (cv.pdf / cv.md) in {settings().paths.resolve('profile')}")
+    print("next: open the web app, create your account and upload your CV under Settings")
     return 0
 
 
@@ -100,11 +101,45 @@ def cmd_sources(args: argparse.Namespace) -> int:
 def cmd_profile(args: argparse.Namespace) -> int:
     from pathlib import Path
 
-    from .pipeline.profile import load_digest
-
+    db.init_db()
+    cand = profile.load(args.user)
+    print(f"# {cand.name}: {cand.readiness}")
+    if not cand.ready:
+        return 1
     workdir = Path(settings().paths.resolve("runs")) / "profile-cli"
-    digest = load_digest(workdir, force=args.force)
+    digest = profile.load_digest(cand, workdir, force=args.force)
     print(digest.model_dump_json(indent=2))
+    return 0
+
+
+def cmd_create_user(args: argparse.Namespace) -> int:
+    """Admin's way in without the UI. The first account claims the pre-login
+    default user so existing decisions and scores are kept."""
+    import getpass
+
+    from . import auth
+    from .config import DEFAULT_USER_ID
+
+    db.init_db()
+    email = args.email.strip().lower()
+    if db.get_user_by_email(email):
+        print(f"{email} already exists", file=sys.stderr)
+        return 1
+    password = args.password or getpass.getpass("password: ")
+    if len(password) < 8:
+        print("password must be at least 8 characters", file=sys.stderr)
+        return 1
+    if not args.password and password != getpass.getpass("again: "):
+        print("passwords differ", file=sys.stderr)
+        return 1
+    first = not db.any_user_can_login()
+    if first:
+        db.claim_user(DEFAULT_USER_ID, email, auth.hash_password(password), is_admin=True)
+        uid = DEFAULT_USER_ID
+    else:
+        uid = db.create_user(email, auth.hash_password(password), is_admin=args.admin)
+    role = "admin" if (first or args.admin) else "user"
+    print(f"created {role} {email} (id {uid})" + (" — owns the existing data" if first else ""))
     return 0
 
 
@@ -129,8 +164,10 @@ def cmd_check(args: argparse.Namespace) -> int:
     with the errors if there were any, so reaching here means they are fine."""
     from .config import preferences, settings
 
-    settings(); preferences()
-    print("configuration OK: config/settings.yaml and config/preferences.yaml are valid")
+    settings()
+    db.init_db()
+    preferences()   # imports a pending config/preferences.yaml into the database
+    print("configuration OK: config/settings.yaml is valid; preferences are in the database")
     return 0
 
 
@@ -140,7 +177,6 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
     import random
 
     from .models import NormalizedJob, fingerprint
-    from .pipeline.criteria import current_criteria_hash
 
     db.init_db()
     with db.connect() as conn:
@@ -152,7 +188,12 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
     titles = ["Senior Software Engineer", "Backend Engineer", "Platform Engineer", "C++ Developer", "Python Developer",
               "Staff Engineer, Infrastructure", "Full Stack Engineer", "Site Reliability Engineer", "Embedded Software Engineer"]
     locations = [("Remote, Europe", "remote"), ("Berlin, Germany", "hybrid"), ("Dublin, Ireland", "onsite"), ("Remote, US", "remote"), ("Amsterdam", "hybrid")]
-    criteria = current_criteria_hash()
+    # The admin gets a CV and notes so the seeded scores are under their real criteria.
+    from .config import DEFAULT_USER_ID
+    db.save_cv(DEFAULT_USER_ID, "cv.md", b"# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.\n",
+               "--- cv.md ---\n# Jane Doe\nSenior engineer. Python, C++, Kubernetes. Ten years of services.")
+    db.save_notes(DEFAULT_USER_ID, "I want remote backend work at a product company. No agencies.\n")
+    criteria = profile.load(DEFAULT_USER_ID).criteria
     n = 0
     with db.connect() as conn:
         for i in range(40):
@@ -178,21 +219,32 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
                                          summary=f"A {title.lower()} role at {company}; a demo posting.",
                                          eligibility="Demo: eligible.", salary=job.salary_raw, tech_stack=["Python", "C++"],
                                          concerns=["demo data"], rationale="demo")
+    # Accounts for the browser suite: the admin owns the seeded scores.
+    from . import auth
+    if not db.any_user_can_login():
+        db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("demo-admin-password"), is_admin=True)
+        db.create_user("user@example.com", auth.hash_password("demo-user-password"))
+    # Both follow the demo source (so they see its postings); the registry
+    # switch stays off so no scan ever fetches it.
     db.upsert_source({"id": "demo", "type": "remoteok", "enabled": False, "company": "Demo"}, origin="user")
-    print(f"seeded {n} fictional postings under criteria {criteria}")
+    for u in db.list_users():
+        db.follow_source(u["id"], "demo", True)
+    db.set_source_enabled("demo", False)
+    print(f"seeded {n} fictional postings under criteria {criteria}; accounts admin@example.com / user@example.com")
     return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from .pipeline.profile import cv_text, profile_dir
-
     print(f"root:      {ROOT}")
     print(f"database:  {db.db_path()} ({'exists' if db.db_path().exists() else 'missing'})")
     print(f"opencode:  {opencode.health_check()}")
-    cv = cv_text()
-    print(f"cv:        {len(cv)} chars from {profile_dir()}"
-          + ("" if cv else "  <-- EMPTY, add a CV"))
     try:
+        db.init_db()
+        for u in db.list_users():
+            c = profile.load(u["id"])
+            r = c.readiness
+            print(f"user {u['id']:<3} {c.name:<30} cv {len(c.cv_text):>6} chars · notes {len(c.notes):>5} chars · "
+                  f"preferences {'ok' if r['preferences'] else 'MISSING'} · {'ready' if r['ready'] else 'NOT READY'}")
         print(f"stats:     {db.stats()}")
     except Exception as exc:
         print(f"stats:     unavailable ({exc}); run `init` first")
@@ -229,13 +281,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("sources", help="show every registered source").set_defaults(func=cmd_sources)
 
-    prof = sub.add_parser("profile", help="show (or rebuild) the CV digest")
+    prof = sub.add_parser("profile", help="show (or rebuild) a user's CV digest")
+    prof.add_argument("--user", type=int, default=1, help="user id (default 1)")
     prof.add_argument("--force", action="store_true", help="rebuild even if cached")
     prof.set_defaults(func=cmd_profile)
 
     sub.add_parser("doctor", help="check the environment").set_defaults(func=cmd_doctor)
     sub.add_parser("check", help="validate the config files; exit 2 with the reason if not").set_defaults(func=cmd_check)
     sub.add_parser("seed-demo", help="fill an empty database with fictional postings (for a test instance)").set_defaults(func=cmd_seed_demo)
+    user = sub.add_parser("create-user", help="add an account (the first one becomes the admin and owns existing data)")
+    user.add_argument("email")
+    user.add_argument("--admin", action="store_true")
+    user.add_argument("--password", help="for scripts; interactive prompt otherwise")
+    user.set_defaults(func=cmd_create_user)
     sub.add_parser("clean-descriptions", help="re-strip HTML from stored job descriptions").set_defaults(func=cmd_clean_descriptions)
     return p
 

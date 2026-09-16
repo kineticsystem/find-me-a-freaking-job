@@ -1,3 +1,4 @@
+from conftest import make_candidate
 from jobfinder.pipeline import progress
 
 
@@ -27,7 +28,7 @@ def test_stop_ends_triage_between_batches_and_keeps_what_was_scored(seeded, crit
     """Three jobs, batch size 1: the first batch is scored, then a stop is
     requested from inside the model call, so the second is not started."""
     from jobfinder import db, opencode
-    from jobfinder.models import ProfileDigest, TriageBatch, TriageResult
+    from jobfinder.models import TriageBatch, TriageResult
     from jobfinder.pipeline import progress, triage
     import jobfinder.pipeline.triage as tri
 
@@ -44,8 +45,9 @@ def test_stop_ends_triage_between_batches_and_keeps_what_was_scored(seeded, crit
         conn.execute("DELETE FROM evaluations")          # all three need triage
     progress.begin(1)
     try:
-        digest = ProfileDigest(headline="Engineer", core_skills=["a"], summary="s" * 40, search_keywords=["a", "b", "c"])
-        stats = triage.run_triage(digest, "test-criteria", tmp_path, run_id=None)
+        cand = make_candidate(headline="Engineer", core_skills=["a"], summary="s" * 40, search_keywords=["a", "b", "c"])
+        monkeypatch.setattr(type(cand), "criteria", property(lambda self: "test-criteria"))
+        stats = triage.run_triage(cand, tmp_path, run_id=None)
         assert stats["stopped"] is True and stats["triaged"] == 1 and len(calls) == 2
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1   # the first batch survived

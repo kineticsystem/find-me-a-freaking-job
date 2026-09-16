@@ -100,7 +100,6 @@ class ApiSettings(BaseModel):
 class Paths(BaseModel):
     db: str = "data/jobs.db"
     runs: str = "runs"
-    profile: str = "profile"
 
     def resolve(self, attr: str) -> Path:
         p = Path(getattr(self, attr))
@@ -244,16 +243,81 @@ def settings() -> Settings:
     return _load_model("settings.yaml", Settings)
 
 
-@lru_cache(maxsize=1)
-def preferences() -> Preferences:
-    return _load_model("preferences.yaml", Preferences)
+DEFAULT_USER_ID = 1
+_prefs_cache: dict[int, Preferences] = {}
+
+
+def preferences(user_id: int = DEFAULT_USER_ID) -> Preferences:
+    """The user's preferences, from the database. A user who has never
+    saved any gets the empty defaults (and is "not set up" until they do)."""
+    if user_id not in _prefs_cache:
+        _prefs_cache[user_id] = _load_preferences(user_id)
+    return _prefs_cache[user_id]
+
+
+preferences.cache_clear = _prefs_cache.clear  # type: ignore[attr-defined]
+
+
+def _load_preferences(user_id: int) -> Preferences:
+    from . import db
+
+    doc = db.get_preferences_doc(user_id)
+    if doc is None and user_id == DEFAULT_USER_ID:
+        doc = import_preferences_file()
+    if doc is None:
+        return Preferences()
+    try:
+        return Preferences.model_validate(doc)
+    except ValidationError as exc:
+        raise ConfigError(f"user {user_id} preferences (database)", _describe(exc)) from exc
+
+
+def import_preferences_file() -> dict[str, Any] | None:
+    """One-time migration: the pre-database config/preferences.yaml becomes the
+    default user's document, and the file is renamed so it is plainly no
+    longer read. Returns the document, or None if there was no file."""
+    import logging
+
+    from . import db
+
+    path = preferences_path()
+    if not path.exists():
+        return None
+    prefs = _load_model("preferences.yaml", Preferences)     # a broken file stops the start, as before
+    doc = prefs.model_dump(exclude_none=True)
+    db.save_preferences_doc(DEFAULT_USER_ID, doc)
+    renamed = path.with_name(path.name + ".imported")
+    path.rename(renamed)
+    logging.getLogger(__name__).warning(
+        "imported %s into the database for user %d and renamed it to %s; the file is no longer read",
+        path.name, DEFAULT_USER_ID, renamed.name)
+    return doc
+
+
+def all_preferences() -> list[Preferences]:
+    """Every user's preferences (for the shared fetch stage)."""
+    from . import db
+
+    out = []
+    for user_id, _ in db.all_preferences_docs():
+        try:
+            out.append(preferences(user_id))
+        except ConfigError:
+            continue
+    return out
+
+
+def save_preferences(prefs: "Preferences", user_id: int = DEFAULT_USER_ID) -> None:
+    """Validated model in, document out. Invalidates the cache."""
+    from . import db
+
+    db.save_preferences_doc(user_id, prefs.model_dump(exclude_none=True))
+    _prefs_cache.pop(user_id, None)
 
 
 # The user's own files, and the checked-in template each is created from.
 USER_FILES: tuple[tuple[str, str], ...] = (
     ("config/settings.yaml", "config/settings.example.yaml"),
-    ("config/preferences.yaml", "config/preferences.example.yaml"),
-    ("profile/notes.md", "profile/notes.example.md"),
 )
 
 
@@ -273,11 +337,16 @@ def ensure_user_files() -> list[str]:
 
 
 def check_config() -> list[ConfigError]:
-    """Load both files without caching. Empty list means both are usable."""
+    """Validate what is read at start: settings.yaml, and a preferences.yaml
+    that is still waiting to be imported. Empty list means all usable."""
     errors: list[ConfigError] = []
-    for name, model in (("settings.yaml", Settings), ("preferences.yaml", Preferences)):
+    try:
+        _load_model("settings.yaml", Settings)
+    except ConfigError as exc:
+        errors.append(exc)
+    if preferences_path().exists():
         try:
-            _load_model(name, model)
+            _load_model("preferences.yaml", Preferences)
         except ConfigError as exc:
             errors.append(exc)
     return errors
@@ -296,7 +365,7 @@ def reload() -> None:
     if errors:
         raise errors[0]
     settings.cache_clear()
-    preferences.cache_clear()
+    _prefs_cache.clear()
 
 
 def settings_path() -> Path:
@@ -305,27 +374,6 @@ def settings_path() -> Path:
 
 def preferences_path() -> Path:
     return CONFIG_DIR / "preferences.yaml"
-
-
-PREFERENCES_HEADER = """# WHO you are and WHAT you want. Everything here is fed to the model on every
-# judgement. Edit it here or from the web app (settings -> Your preferences);
-# either way, every job is re-scored on the next scan.
-#
-# location_rules are in priority order: the first market wins ties. That is a
-# tie-breaker, not a filter -- later markets still surface.
-#
-# Free text about what you want lives in profile/notes.md, not here.
-"""
-
-
-def write_preferences(prefs: "Preferences") -> Path:
-    """Write preferences.yaml from a validated model. Comments other than the
-    header are not preserved; that is the price of editing it from a form."""
-    data = prefs.model_dump(exclude_none=True)
-    path = preferences_path()
-    path.write_text(PREFERENCES_HEADER + yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100))
-    reload()
-    return path
 
 
 def write_top_level_setting(key: str, value: int | float | str | bool) -> None:

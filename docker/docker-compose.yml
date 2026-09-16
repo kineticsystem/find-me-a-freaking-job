@@ -33,7 +33,6 @@ services:
       # user edits or the app persists stays on the host; the code is in the
       # image.
       - ../config:/home/developer/app/config
-      - ../profile:/home/developer/app/profile
       - ../data:/home/developer/app/data
       - ../runs:/home/developer/app/runs
       # The scripts, so the llama-server command line (bin/llama-server.sh)

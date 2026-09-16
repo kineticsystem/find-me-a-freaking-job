@@ -1,4 +1,5 @@
 import pytest
+from conftest import make_candidate
 """Contract the web UI relies on."""
 
 
@@ -147,12 +148,9 @@ def test_reason_is_cleared_when_the_job_is_restored(client, seeded):
 
 
 def test_rejection_reasons_reach_the_prompts(client, seeded, monkeypatch):
-    from jobfinder.models import ProfileDigest
     from jobfinder.prompts import deepdive_prompt, triage_prompt
 
-    digest = ProfileDigest(headline="Senior C++ engineer", core_skills=["C++"],
-                           summary="Twenty years of C++ on desktop and robotics software.",
-                           search_keywords=["c++", "qt", "ros2"])
+    digest = make_candidate()
     entry = [{"ref": 1, "company": "X", "title": "Y", "location": "Z", "remote_type": "remote",
               "salary": "", "excerpt": "..."}]
     assert "REJECTED" not in triage_prompt(digest, entry)
@@ -222,40 +220,33 @@ def test_settings_change_persists_and_reschedules(client, tmp_path, monkeypatch)
     config.reload()
 
 
-@pytest.fixture()
-def profile_dir(tmp_path, monkeypatch):
-    from jobfinder.pipeline import profile as prof
-    d = tmp_path / "profile"; (d / ".cache").mkdir(parents=True)
-    monkeypatch.setattr(prof, "profile_dir", lambda: d)
-    return d
-
-
-def test_cv_upload_replaces_previous_and_invalidates_digest(client, profile_dir):
-    (profile_dir / "cv.pdf").write_bytes(b"%PDF-old")
-    (profile_dir / ".cache" / "profile.json").write_text("{}")
+def test_cv_upload_replaces_previous_and_invalidates_digest(client):
+    from jobfinder import db
+    db.save_cv(1, "cv.pdf", b"%PDF-old", "old text")
+    db.save_digest(1, "stale-hash", "{}")
     r = client.post("/profile/cv", files={"file": ("My Resume.md", b"# Jane Doe\nSenior engineer, C++ and Python.", "text/markdown")})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["saved"] == "cv.md" and body["cv"]["name"] == "cv.md"
     assert body["cv_files"] == ["cv.md"]                 # the old cv.pdf is gone
-    assert not (profile_dir / "cv.pdf").exists()
-    assert not (profile_dir / ".cache" / "profile.json").exists()  # digest will be rebuilt
-    assert body["cv_chars"] > 0 and body["digest_current"] is False
-    assert (profile_dir / "cv.md").read_text().startswith("# Jane Doe")
+    assert body["cv_chars"] > 0 and body["digest_current"] is False   # digest will be rebuilt
+    assert db.get_cv_blob(1) == ("cv.md", b"# Jane Doe\nSenior engineer, C++ and Python.")
+    dl = client.get("/profile/cv")
+    assert dl.status_code == 200 and dl.content.startswith(b"# Jane Doe") and 'filename="cv.md"' in dl.headers["content-disposition"]
 
 
-def test_cv_upload_rejects_bad_files(client, profile_dir):
+def test_cv_upload_rejects_bad_files(client):
     assert client.post("/profile/cv", files={"file": ("cv.docx", b"PK..", "application/octet-stream")}).status_code == 400
     assert client.post("/profile/cv", files={"file": ("cv.pdf", b"not a pdf", "application/pdf")}).status_code == 400
     assert client.post("/profile/cv", files={"file": ("cv.txt", b"", "text/plain")}).status_code == 400
     assert client.get("/profile").json()["cv"] is None    # nothing was written
+    assert client.get("/profile/cv").status_code == 404
 
 
-def test_notes_round_trip(client, profile_dir):
+def test_notes_round_trip(client):
     r = client.put("/profile/notes", json={"text": "I want remote C++ work.\n\nNo agencies."})
     assert r.status_code == 200
-    assert (profile_dir / "notes.md").read_text() == "I want remote C++ work.\n\nNo agencies.\n"
-    assert client.get("/profile").json()["notes"] == "I want remote C++ work.\n\nNo agencies."
+    assert client.get("/profile").json()["notes"] == "I want remote C++ work.\n\nNo agencies.\n"
 
 
 def test_source_toggle_survives_a_config_resync(tmp_db):
@@ -294,7 +285,7 @@ def test_add_source_from_a_careers_url(client, tmp_db, monkeypatch):
         def fetch(self): return []
     monkeypatch.setattr("jobfinder.sources.build", lambda cfg: EmptyBoard(cfg))
     assert client.post("/sources", json={"url": "https://boards.greenhouse.io/nobody"}).status_code == 400
-    assert client.get("/sources").json()["sources"][0]["id"] == "le-acme"  # nothing else was added
+    assert [s["id"] for s in client.get("/sources").json()["sources"] if s["origin"] == "user" and s["type"] == "lever"] == ["le-acme"]  # nothing else was added
 
     assert client.post("/sources/le-acme/enabled", params={"enabled": "false"}).status_code == 200
     assert client.delete("/sources/le-acme").status_code == 200
@@ -302,17 +293,16 @@ def test_add_source_from_a_careers_url(client, tmp_db, monkeypatch):
 
 
 @pytest.fixture()
-def prefs_file(monkeypatch):
-    """The throwaway preferences file the autouse fixture already points at."""
+def prefs_doc(tmp_db):
+    """A preferences document saved for the default user in the throwaway db."""
     import jobfinder.config as config
-    path = config.preferences_path()
-    path.write_text("based_in: Netherlands\ntitles: [Engineer]\nmin_salary: {amount: 70000, currency: EUR, period: year}\n")
-    config.reload()
-    yield path
-    config.settings.cache_clear(); config.preferences.cache_clear()
+    config.save_preferences(config.Preferences(based_in="Netherlands", titles=["Engineer"],
+                                               min_salary=config.Salary(amount=70000, currency="EUR", period="year")))
+    yield
+    config.preferences.cache_clear()
 
 
-def test_preferences_form_save_validates_and_orders_markets(client, prefs_file):
+def test_preferences_form_save_validates_and_orders_markets(client, prefs_doc):
     assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
     body = {
         "based_in": "Netherlands", "citizenship": ["Netherlands", "EU"], "titles": ["C++ Engineer"],
@@ -330,20 +320,22 @@ def test_preferences_form_save_validates_and_orders_markets(client, prefs_file):
     assert [x["priority"] for x in p["location_rules"]] == [1, 2]     # order wins over the sent numbers
     assert p["market_priority"] == ["US", "EU"]                        # derived, not the stale list
     assert p["min_salary"]["amount"] == 90000
-    text = prefs_file.read_text()
-    assert text.startswith("# WHO you are") and "C++ Engineer" in text and "stale" not in text
+    # stored as one document per user in the database, not in a file
+    from jobfinder import db
+    doc = db.get_preferences_doc(db.DEFAULT_USER_ID)
+    assert doc["titles"] == ["C++ Engineer"] and doc["market_priority"] == ["US", "EU"]
     # the pipeline sees the new values
     from jobfinder.config import preferences
     assert preferences().must_have == ["C++"] and preferences().fingerprint != ""
     # validation: a bad remote value is refused and nothing is written
     bad = dict(body, location_rules=[{"country": "US", "remote": "sometimes"}])
     assert client.put("/preferences", json=bad).status_code == 422
-    assert "sometimes" not in prefs_file.read_text()
+    assert db.get_preferences_doc(db.DEFAULT_USER_ID)["location_rules"][0]["remote"] == "required"
 
 
 def test_reset_jobs_keeps_sources_and_needs_the_word(client, seeded, tmp_db):
     from jobfinder import db
-    db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="discovered")
+    db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="discovered", followers=[1])
     client.patch(f"/jobs/{seeded['a']}/state", json={"status": "shortlisted"})
     assert client.post("/reset/jobs", json={"confirm": "delete"}).status_code == 400   # wrong word
     assert client.get("/jobs").json()["total"] == 3                                    # nothing happened
@@ -351,7 +343,7 @@ def test_reset_jobs_keeps_sources_and_needs_the_word(client, seeded, tmp_db):
     assert r.status_code == 200
     assert r.json()["deleted"]["jobs"] == 3 and r.json()["deleted"]["decisions"] == 1
     assert client.get("/jobs").json()["total"] == 0
-    assert [s["id"] for s in client.get("/sources").json()["sources"]] == ["gh-acme"]  # sources kept
+    assert "gh-acme" in [s["id"] for s in client.get("/sources").json()["sources"]]  # sources kept
 
 
 def test_reset_all_clears_sources_and_reseeds(client, seeded, tmp_db, monkeypatch):
@@ -360,7 +352,7 @@ def test_reset_all_clears_sources_and_reseeds(client, seeded, tmp_db, monkeypatc
     db.mark_discovery("source:gh-acme", "source")
     monkeypatch.setattr(discovery, "seed_from_config", lambda: db.upsert_source({"id": "seed", "type": "remoteok"}, origin="config"))
     r = client.post("/reset/all", json={"confirm": "DELETE"})
-    assert r.status_code == 200 and r.json()["deleted"]["sources"] == 1
+    assert r.status_code == 200 and r.json()["deleted"]["sources"] == 3
     assert [s["id"] for s in client.get("/sources").json()["sources"]] == ["seed"]
     assert client.get("/jobs").json()["total"] == 0
     assert not db.seen_discovery("source:gh-acme")
@@ -373,31 +365,38 @@ def test_reset_refused_while_a_scan_runs(client, seeded, monkeypatch):
     assert client.get("/jobs").json()["total"] == 3
 
 
-def test_broken_preferences_yaml_is_reported_and_previous_values_kept(client, prefs_file):
+def test_preferences_yaml_is_imported_once_then_renamed(tmp_db):
+    """The pre-database file becomes the default user's document on first
+    read, and is renamed so nobody edits a file that is no longer read."""
     import jobfinder.config as config
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
-    prefs_file.write_text("titles: [\nbroken")
-    r = client.post("/reload")
-    assert r.status_code == 400
-    assert "config/preferences.yaml cannot be used: not valid YAML (line" in r.json()["detail"]
-    # the last good values stay in force; nothing runs on defaults
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Netherlands"
-    errs = config.check_config()
-    assert [e.file for e in errs] == ["preferences.yaml"]
-    # a settings change is refused too, since the reload would find the broken file
-    assert client.patch("/settings", json={"interval_minutes": 60}).status_code == 400
-    # saving from the form repairs it
-    assert client.put("/preferences", json={"based_in": "Denmark", "titles": ["Dev"]}).status_code == 200
-    assert config.check_config() == []
-    assert client.get("/preferences").json()["preferences"]["based_in"] == "Denmark"
+    path = config.preferences_path()
+    path.write_text("based_in: Ireland\ntitles: [Dev]\nlocation_rules:\n  - {country: US, remote: required}\n")
+    config.preferences.cache_clear()
+    p = config.preferences()
+    assert p.based_in == "Ireland" and p.titles == ["Dev"]
+    assert not path.exists() and path.with_name("preferences.yaml.imported").exists()
+    from jobfinder import db
+    assert db.get_preferences_doc(db.DEFAULT_USER_ID)["based_in"] == "Ireland"
+    # a second load comes from the database, not the (now absent) file
+    config.preferences.cache_clear()
+    assert config.preferences().based_in == "Ireland"
 
 
-def test_invalid_values_in_preferences_yaml_are_named(prefs_file):
+def test_a_broken_pending_preferences_yaml_still_stops_the_start(tmp_db):
     import jobfinder.config as config
-    prefs_file.write_text("location_rules:\n  - {country: US, remote: sometimes}\n")
+    config.preferences_path().write_text("location_rules:\n  - {country: US, remote: sometimes}\n")
     [err] = config.check_config()
-    assert err.file == "preferences.yaml"
-    assert err.detail.startswith("invalid values") and "location_rules" in err.detail and "remote" in err.detail
+    assert err.file == "preferences.yaml" and "remote" in err.detail
+    config.preferences.cache_clear()
+    with pytest.raises(config.ConfigError):
+        config.preferences()
+
+
+def test_no_file_and_no_document_means_empty_preferences(tmp_db):
+    import jobfinder.config as config
+    config.preferences_path().unlink(missing_ok=True)
+    config.preferences.cache_clear()
+    assert config.preferences().titles == [] and config.check_config() == []
 
 
 def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
@@ -414,15 +413,13 @@ def test_cli_refuses_to_start_on_a_broken_config(tmp_path, monkeypatch, capsys):
     config.settings.cache_clear(); config.preferences.cache_clear()
 
 
-def test_notes_go_into_every_judgement_verbatim(client, profile_dir, monkeypatch):
-    from jobfinder.models import ProfileDigest
+def test_notes_go_into_every_judgement_verbatim(client, monkeypatch):
+    from jobfinder.pipeline import profile as prof
     from jobfinder.prompts import deepdive_prompt, triage_prompt
-    digest = ProfileDigest(headline="Senior C++ engineer", core_skills=["C++"],
-                           summary="Twenty years of C++ on desktop and robotics software.",
-                           search_keywords=["c++", "qt", "ros2"])
     entry = [{"ref": 1, "company": "X", "title": "Y", "location": "Z", "remote_type": "remote", "salary": "", "excerpt": "..."}]
-    assert "OWN NOTES" not in triage_prompt(digest, entry)           # no notes file yet
+    assert "OWN NOTES" not in triage_prompt(make_candidate(), entry)           # no notes yet
     client.put("/profile/notes", json={"text": "I know ROS2 well but I am **not a roboticist**."})
+    digest = make_candidate(notes=prof.notes_text(1))                    # what the pipeline loads
     t = triage_prompt(digest, entry)
     assert "THE CANDIDATE'S OWN NOTES" in t and "**not a roboticist**" in t
     assert "**not a roboticist**" in deepdive_prompt(digest, {"company": "X", "title": "Y", "location": "Z", "url": ""}, "...")
@@ -435,57 +432,48 @@ def test_user_files_are_created_from_examples(tmp_path, monkeypatch):
     import shutil
     import jobfinder.config as config
     root = tmp_path / "repo"
-    for rel in ("config/settings.example.yaml", "config/preferences.example.yaml", "profile/notes.example.md"):
+    for rel in ("config/settings.example.yaml",):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(config.ROOT / rel, root / rel)
     monkeypatch.setattr(config, "ROOT", root)
     created = config.ensure_user_files()
-    assert created == ["config/settings.yaml", "config/preferences.yaml", "profile/notes.md"]
+    assert created == ["config/settings.yaml"]   # preferences, notes and the CV live in the database
     assert config.ensure_user_files() == []           # idempotent
-    assert (root / "config/preferences.yaml").read_text() == (root / "config/preferences.example.yaml").read_text()
+    assert (root / "config/settings.yaml").read_text() == (root / "config/settings.example.yaml").read_text()
 
 
-def test_example_files_are_valid_and_empty_of_personal_data():
+def test_example_settings_are_valid():
     import jobfinder.config as config
-    prefs = config.Preferences.model_validate(__import__("yaml").safe_load((config.ROOT / "config/preferences.example.yaml").read_text()))
-    assert prefs.based_in == "" and prefs.titles == [] and prefs.citizenship == [] and prefs.min_salary is None
     config.Settings.model_validate(__import__("yaml").safe_load((config.ROOT / "config/settings.example.yaml").read_text()))
-    from jobfinder.pipeline.profile import _HTML_COMMENT
-    from jobfinder.textutil import clean
-    example_notes = (config.ROOT / "profile/notes.example.md").read_text()
-    assert clean(_HTML_COMMENT.sub("", example_notes)) == ""  # reads as "not written yet"
 
 
-def test_readiness_checklist_and_no_scan_until_ready(client, profile_dir, prefs_file, monkeypatch):
+def test_readiness_checklist_and_no_scan_until_ready(client, tmp_db, monkeypatch):
     import jobfinder.config as config
     from jobfinder.pipeline import profile as prof
     from jobfinder.pipeline import run as run_mod
-    prefs_file.write_text("based_in: ''\ntitles: []\n"); config.reload()
-    (profile_dir / "notes.md").write_text("<!-- just the template comment -->\n")
-    r = prof.readiness()
+    config.preferences_path().unlink(missing_ok=True)
+    config.save_preferences(config.Preferences())
+    client.put("/profile/notes", json={"text": "<!-- just the template comment -->\n"})
+    r = prof.readiness(1)
     assert r == {"cv": False, "notes": False, "preferences": False, "ready": False}
     assert client.get("/health").json()["setup"]["ready"] is False
+    assert client.get("/health", headers={}).json()["setup"]["ready"] is False
     # no scan at all: not from the API, not from the scheduler (run_once)
     resp = client.post("/runs")
     assert resp.status_code == 409 and "missing: cv, notes, preferences" in resp.json()["detail"]
     monkeypatch.setattr(run_mod.db, "start_run", lambda: (_ for _ in ()).throw(AssertionError("a run was started")))
     assert run_mod.run_once() == {"skipped": "not set up", "not_ready": ["cv", "notes", "preferences"]}
-    (profile_dir / "cv.md").write_text("# Jane Doe\nEngineer.")
+    client.post("/profile/cv", files={"file": ("cv.md", b"# Jane Doe\nEngineer.", "text/markdown")})
     client.put("/profile/notes", json={"text": "I want remote work."})
     client.put("/preferences", json={"based_in": "Denmark", "titles": ["Engineer"]})
-    assert prof.readiness()["ready"] is True
+    assert prof.readiness(1)["ready"] is True
     assert client.get("/health").json()["setup"] == {"cv": True, "notes": True, "preferences": True, "ready": True}
+    assert [c.user_id for c in prof.candidates()] == [1]
 
 
-def test_only_cv_dot_ext_counts_as_the_cv(profile_dir):
-    from jobfinder.pipeline import profile as prof
-    (profile_dir / "notes.example.md").write_text("<!-- template -->")
-    (profile_dir / "notes.md").write_text("my notes")
-    (profile_dir / "README.md").write_text("# docs")
-    (profile_dir / "random.txt").write_text("not a cv")
-    assert prof.cv_files() == [] and prof.readiness()["cv"] is False
-    (profile_dir / "cv.md").write_text("# Jane Doe")
-    assert [f.name for f in prof.cv_files()] == ["cv.md"] and prof.readiness()["cv"] is True
+def test_health_without_a_token_has_no_per_user_parts(anon_client):
+    h = anon_client.get("/health").json()
+    assert h["ok"] is True and h["setup"] is None and h["stats"] is None and h["stale_scores"] is None
 
 
 def test_add_source_finds_the_board_behind_a_careers_page(client, tmp_db, monkeypatch):
@@ -567,7 +555,7 @@ def test_scores_from_before_a_preferences_change_show_as_stale(client, seeded, c
     from jobfinder.pipeline import criteria as crit
     before = client.get("/jobs").json()["jobs"]
     assert before[0]["score"] == 92 and before[0]["score_stale"] == 0
-    monkeypatch.setattr(crit, "current_criteria_hash", lambda: "new-criteria")   # preferences changed
+    monkeypatch.setattr(crit, "current_criteria_hash", lambda user_id=1: "new-criteria")   # preferences changed
     after = client.get("/jobs", params={"sort": "score"}).json()["jobs"]
     assert [(j["score"], j["score_stale"]) for j in after] == [(92, 1), (55, 1), (None, 0)]   # same order, now stale
     assert after[0]["summary"] == "Great C++ role"                                        # the old deep dive still shows

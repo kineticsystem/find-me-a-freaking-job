@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import hashlib
 
-from ..config import preferences
+from ..config import DEFAULT_USER_ID
 
 
-def criteria_hash(profile_fingerprint: str) -> str:
-    blob = f"{profile_fingerprint}|{preferences().fingerprint}"
+def criteria_hash(source_hash: str, preferences_fingerprint: str) -> str:
+    blob = f"{source_hash}|{preferences_fingerprint}"
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def current_criteria_hash() -> str:
-    from .profile import profile_fingerprint
+def current_criteria_hash(user_id: int = DEFAULT_USER_ID) -> str:
+    from .profile import load
 
-    return criteria_hash(profile_fingerprint())
+    return load(user_id).criteria

@@ -38,16 +38,18 @@ One run, in order (`jobfinder/pipeline/run.py`):
 
 | Stage | Module | LLM | Purpose |
 |---|---|---|---|
-| profile | `pipeline/profile.py` | once, cached | CV + notes → a compact `ProfileDigest` (~800 tokens) injected into every later prompt. Rebuilt only when the CV or notes change (content hash). The notes themselves are also injected verbatim into every judgement (`limits.notes_chars`): the digest compresses, and nuance such as "knows X but is not a Y" must not be. |
+| profile | `pipeline/profile.py` | once per user, cached | For every user whose profile is complete (`candidates()`): CV + notes → a compact `ProfileDigest` (~800 tokens) injected into every later prompt for that user. Stored on `user_profile`, rebuilt only when the CV or notes change (content hash). The notes themselves are also injected verbatim into every judgement (`limits.notes_chars`): the digest compresses, and nuance such as "knows X but is not a Y" must not be. |
 | fetch | `pipeline/fetch.py`, `sources/` | no | Every enabled source in a thread pool. One failing board never fails the run; failures are recorded per source and a source is disabled after five in a row. |
 | harvest | `discovery.py` | no | See Discovery. |
 | extract | `pipeline/extract.py` | batched | Prose adverts (HN "Who is hiring" comments) → structured postings. Output-token bound, so batches are small and capped per run; each comment is only ever structured once. |
-| prefilter | `prefilter.py` | no | Keyword gate. Bulk aggregators return every job on earth; this drops the medical coders before any inference is spent. Deliberately permissive — it removes the obviously irrelevant and leaves judgement to the model. |
+| prefilter | `prefilter.py` | no | Keyword gate. Bulk aggregators return every job on earth; this drops the medical coders before any inference is spent. Deliberately permissive — it removes the obviously irrelevant and leaves judgement to the model. With several users a posting is stored if it passes for any of them. |
 | store | `pipeline/fetch.py`, `db.py` | no | Normalise, fingerprint, upsert. |
-| triage | `pipeline/triage.py` | batched | 12 postings per session, title + company + location + 700-char excerpt each. Score 0–100 and a one-line reason. Cheap and wide. |
-| deep dive | `pipeline/deepdive.py` | one per job | Only postings above `deepdive_min_score`, at most `deepdive_top_n`. The full posting (truncated at 20K chars), an explicit eligibility judgement, summary, salary, stack, concerns. Expensive and narrow. |
+| triage | `pipeline/triage.py` | batched, per user | 12 postings per session, title + company + location + 700-char excerpt each. Score 0–100 and a one-line reason. Cheap and wide. |
+| deep dive | `pipeline/deepdive.py` | one per job, per user | Only postings above `deepdive_min_score`, at most `deepdive_top_n`. The full posting (truncated at 20K chars), an explicit eligibility judgement, summary, salary, stack, concerns. Expensive and narrow. |
 | websearch | `discovery.py` | queries only | See Discovery. |
-| digest | `pipeline/digest.py` | no | `runs/<ts>/digest.md` and `runs/latest-digest.md`. |
+| digest | `pipeline/digest.py` | no | `runs/<ts>/digest.md` and `runs/latest-digest.md`, a section per user. |
+
+Fetching happens once per run for everyone (a company board returns the same list whoever asks); the keyword channel, which queries a board with terms from a CV, runs per user. Scoring is then a loop over users: each is triaged and deep-dived under their own criteria hash, so a posting has one row in `jobs` and one score per person. Stop ends the loop at the next unit boundary.
 
 The two-stage triage/deep-dive split is the cost model: a batched pass over everything, a per-item pass over survivors. The expensive stage sees the fewest items.
 
@@ -83,7 +85,11 @@ Discovery bookkeeping lives in the `discovery_log` table: which queries have bee
 
 LinkedIn and Indeed are deliberately absent. Both wall or block automated access; an adapter would be a scraper that silently returns nothing.
 
-`config/sources.yaml` is the seed. On every run it is upserted into the `sources` table, which is the live registry. The file stays authoritative for *what* a config source is (type, slug, options) but not for whether it is on: `enabled` in the YAML applies only when the row is first created, and a source switched off in the UI stays off across re-syncs. Rows have an `origin` of `config`, `discovered` (harvest) or `user` (pasted into the UI); only the last two can be deleted, since the YAML would recreate a config one.
+`config/sources.yaml` is the seed. On every run it is upserted into the `sources` table, which is the live registry. The file stays authoritative for *what* a config source is (type, slug, options) but not for whether anyone follows it: `enabled` in the YAML applies only when the row is first created. Rows have an `origin` of `config`, `discovered` (harvest or web search), `user` (pasted into the UI) or `keyword` (a query built from one user's CV vocabulary).
+
+**Following is per user** (`user_sources`: user, source, on/off). The registry row is shared so a company two people follow is fetched once and each posting exists once; who follows it decides who sees it. Defaults by how a source arrives: seed rows are followed by every account, including ones created later; a pasted URL is followed by whoever pasted it, and pasting a URL somebody else already added follows the existing row rather than creating a second; a discovered board inherits the followers of the source its posting came from, so discovery never leaks one person's interests into another's list; a keyword source is followed by the one user it was built from. A user's list is exactly the rows they have a follow row for, on or off — what someone else added, or had discovered through their boards, is not theirs to see, though the registry row is shared underneath so a board two people add is fetched once. A source is fetched if at least one follower has it on (`active_sources`); following a board that had switched itself off after failures resets its failure count. Removing a source removes it from one's own list; the shared row is dropped only once nobody has it. Seed rows cannot be removed, only switched off.
+
+**Visibility.** `job_sources` records every source a posting was seen from (the same job on two boards is one `jobs` row, two here). A job is visible to a user — in the list, the facets, the counts, and the triage and deep-dive candidate sets — if one of its sources is followed by them, or if they already have a decision on it, so switching a board off does not hide a shortlist. Every job query carries that predicate (`db._VISIBLE`).
 
 ## opencode integration
 
@@ -119,11 +125,19 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 | Table | Holds |
 |---|---|
 | `jobs` | One row per posting, unique on `fingerprint` = normalised company + title + location, so the same job on three boards collapses to one row. `first_seen`, `last_seen`, `seen_count` track its lifetime. |
-| `evaluations` | One row per (job, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
-| `user_state` | Your decisions: `new`, `shortlisted`, `applied`, `dismissed`, `archived`, plus notes. Separate from `evaluations` on purpose — a re-run never touches it. |
+| `evaluations` | One row per (job, user, stage, criteria). History is kept: a re-score under new preferences adds a row rather than overwriting. |
+| `users` | One row per user: `email` (unique), `password_hash` (Argon2id via `pwdlib`; never the password), `is_admin`. `init_db` creates user 1, who becomes the admin the moment an account is created, so a single-user database becomes that person's on first login. |
+| `api_tokens` | Login sessions and, later, personal access tokens: `user_id`, `token_hash` (SHA-256 of the token — the token itself is shown once and never stored), `name`, `created_at`, `expires_at`, `last_used_at`. One row per device; a logout is one DELETE, "everywhere" is one DELETE by user. |
+| `user_profile` | One row per user: the CV as uploaded (`cv_data`, `cv_name`) and the text pulled out of it (`cv_text`, pypdf for PDFs), the notes, and the model's digest of both with the source hash it was made from. In the database rather than files so `jobs.db` is the whole backup. |
+| `user_preferences` | One JSON document per user: the whole `Preferences` model, validated on write (`PUT /preferences`) and on read. A document rather than tables because nothing queries inside it — it is loaded whole, handed to the model, hashed for the criteria. `schema_version` allows lazy migration on read. A pre-database `config/preferences.yaml` is imported into it on first read and renamed `.imported`. |
+| `user_state` | A user's decisions on a job, keyed `(job_id, user_id)`: `shortlisted`, `applied`, `dismissed` (with a reason), `archived`, plus notes; no row means `new`. Separate from `evaluations` on purpose — a re-run never touches it. |
 | `runs` | Start, end, status, stats JSON, error. |
 | `sources` | The live source registry (see Sources). |
+| `user_sources` | Who follows which source, and whether it is on for them. |
+| `job_sources` | Every source a posting was seen from. |
 | `discovery_log` | What discovery has already tried or seen. |
+
+**Per user.** `pipeline/profile.py` builds a `Candidate` per user — id, preferences, CV text, notes, digest, and from those the criteria hash — and everything that judges a posting takes one: the prompts, triage, deep dive, keyword sources, query generation, the report. Every query over scores and decisions takes a `user_id`, supplied by the API from the bearer token. Jobs and sources are shared; a user's list is a query over the shared table, never a copy. Databases from before `user_id` existed are rebuilt in place by `init_db`, every row becoming user 1's.
 
 **Criteria hash.** Every evaluation is stamped with `sha256(profile_digest_hash | preferences_hash)`. A job "needs evaluation" when it has no row for the current hash. So editing the CV, the notes or `preferences.yaml` automatically makes every job eligible for re-scoring on the next run, and the old scores remain queryable.
 
@@ -133,9 +147,9 @@ SQLite, one file, WAL mode, a fresh connection per operation so the scheduler th
 
 ## The user's files
 
-Four files are the user's own and never belong in the repository: `config/settings.yaml`, `config/preferences.yaml`, `profile/notes.md` and `profile/cv.*`. The first three are created from checked-in `.example` templates by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. All four are git-ignored, as are `data/` and `runs/`. The example notes file is a single HTML comment; `notes_text()` strips comments, so an untouched file reads as empty.
+One file is the installation's own and never belongs in the repository: `config/settings.yaml`, created from the checked-in `settings.example.yaml` by `config.ensure_user_files()`, which every CLI command runs before reading anything, so a fresh clone starts. It is git-ignored, as are `data/` and `runs/`. Everything personal — CV, notes, preferences — is in the database. One importer remains for installs from before that: `config.import_preferences_file()` takes a `config/preferences.yaml` into user 1's row once, on start, and renames it `.imported`. A CV or notes from a pre-login install are re-entered in the web app. HTML comments in notes are stripped, so a note that is only a template comment reads as empty.
 
-`profile.readiness()` reports whether the CV, the notes and the essential preferences (based in, titles) exist. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
+`Candidate.readiness` reports whether the CV, the notes and the essential preferences (based in, titles) exist for a user. `/health` exposes it, the UI shows a checklist banner until all three are done, and until then `run_once` does nothing at all — no fetch, no run record, just a log line — and `POST /runs` answers 409 naming what is missing.
 
 ## Configuration failures
 
@@ -145,8 +159,14 @@ Four files are the user's own and never belong in the repository: `config/settin
 
 FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.py`). The scheduler fires `run_once` on an interval with `max_instances=1` and `coalesce=True`: a run that outlasts the interval is never stacked, and missed ticks collapse into one. A process-wide lock makes a manual `POST /runs` and a scheduled tick mutually exclusive.
 
+**Login** (`jobfinder/auth.py`). Every route except `/health`, `/auth/login` and `/auth/setup` requires `Authorization: Bearer <token>`; a missing or unknown token is 401. The token is 32 random bytes from `secrets`, returned once by `POST /auth/login` and kept by the web app in `localStorage`; the database stores only its SHA-256, looked up per request (`api_tokens`), with a 30-day expiry. It is never accepted in a query string: a URL token leaks into access logs, browser history and the `Referer` of every Apply link. Passwords are hashed with Argon2id (`pwdlib`); a login with an unknown email still runs a hash verification so the response time does not reveal which emails exist, and both failures return the same 401. Routes that change the shared installation — settings, profile files, sources, scans, resets, reload, accounts — take an admin token (403 otherwise); per-user routes read the user from the token. `POST /auth/setup` works only while no account can log in: it claims user 1, so existing data becomes the first person's. A user can change their own password (`PUT /auth/password`, other devices logged out); the admin can replace anyone's (`PUT /users/{id}/password`, all their devices logged out), add (`POST /users`) and remove accounts (`DELETE /users/{id}`, cascading to their tokens, decisions, scores and preferences; jobs stay).
+
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/auth/login` · `/auth/setup` | email + password → `{token, expires_at, user}`; setup is the first account only (409 afterwards) |
+| POST | `/auth/logout` | revokes this token; `?everywhere=true` every token of the user |
+| GET | `/auth/me` · PUT `/auth/password` | who the token belongs to · change own password |
+| GET / POST | `/users` · PUT `/users/{id}/password` · DELETE `/users/{id}` | admin: list, add, reset a password, remove |
 | GET | `/health` | scheduler state, next run, set-up checklist, live scan progress (`pipeline/progress.py`: stage, units done of total, an ETA from the mean unit time so far), counts |
 | GET | `/jobs` | paged, ranked list; `q`, `status`, `remote`, `source`, `min_score`, `sort`, `include_archived`, `limit`, `offset`; returns `total` |
 | GET | `/jobs/facets` | filter options with counts |
@@ -158,14 +178,14 @@ FastAPI + APScheduler in one process (`jobfinder/api.py`, `jobfinder/scheduler.p
 | GET / POST | `/runs` | history / trigger now |
 | POST | `/runs/stop` | cooperative stop: the stages check a flag between units, and the in-flight opencode session's process group is killed so the wait is seconds; the run is recorded as `stopped` with what it scored |
 | GET | `/digest` | latest Markdown digest |
-| GET | `/sources` | the registry with per-source counts and health |
-| POST | `/sources` | `{"url": …}` — register a Greenhouse / Lever / Ashby board from its careers URL; fetched once to check it answers and has openings |
-| POST | `/sources/{id}/enabled?enabled=` · DELETE `/sources/{id}` | toggle · remove (not config-origin) |
+| GET | `/sources` | this user's list: `following`, counts, health |
+| POST | `/sources` | `{"url": …}` — add a company from its careers URL to your list; a board somebody else already added is followed, not duplicated |
+| POST | `/sources/{id}/enabled?enabled=` · DELETE `/sources/{id}` | your own switch · remove from your list (the shared row goes once nobody has it); both 404 for a source not in your list, delete is 400 for a seed row |
 | GET / PATCH | `/settings` | the interval and run-on-start; a PATCH rewrites the key in `config/settings.yaml` in place (comments kept) and reschedules the running scheduler, so no restart |
 | GET | `/profile` | the CV on disk, the notes, the cached digest |
-| POST | `/profile/cv` | multipart upload; saved as `profile/cv.<ext>`, previous CV removed, digest cache dropped |
-| PUT | `/profile/notes` | replaces `profile/notes.md` |
-| GET / PUT | `/preferences` | the parsed preferences plus the YAML text; PUT saves from the form, validated by the same model the pipeline reads, with `location_rules` order becoming the priority and `market_priority` derived from it |
+| GET / POST | `/profile/cv` | download the CV as uploaded · multipart upload, replacing the previous one; the digest is rebuilt and the user re-scored on the next run |
+| PUT | `/profile/notes` | replaces the user's notes |
+| GET / PUT | `/preferences` | the user's preferences document; PUT saves from the form, validated by the same model the pipeline reads, with `location_rules` order becoming the priority and `market_priority` derived from it |
 | POST | `/reset/jobs` · `/reset/all` | `{"confirm": "DELETE"}` — delete every job, score, decision and run (sources and files stay) · that plus the sources and discovery memory, reseeded from config; both refused while a scan runs |
 | POST | `/reload` | re-read YAML without a restart |
 
@@ -174,6 +194,8 @@ When `web/dist/index.html` exists the same app mounts `/assets` and serves `inde
 ## Web UI
 
 `web/` — React 19, TypeScript, Vite, pnpm. No component library; the whole stylesheet is ~200 lines with light and dark from `prefers-color-scheme`.
+
+`App` is a gate: with no token, or a token the server no longer accepts (any 401 drops it), it renders `components/Login.tsx` — the first-account form when `/health` says `needs_setup`, the login form otherwise — and only then the workspace. `api.ts` adds the `Authorization` header to every request. Non-admins do not see the scan controls, the set-up checklist, or the Scanning, Profile, Sources, Users and Danger-zone sections of the settings panel; the server refuses them regardless.
 
 Three files carry the logic: `App.tsx` (query state, paging, actions, toasts), `components/JobCard.tsx`, `components/Filters.tsx`. `api.ts` is the typed client; `types.ts` mirrors the API contract.
 
@@ -189,7 +211,7 @@ In development `pnpm dev` proxies API paths to `:8099`; in production the built 
 
 One container runs three things: `llama-server` from the fork, the app server, and the web UI. `bin/start.sh` is the entrypoint; it starts the model server and the app and exits when either dies, so `restart: unless-stopped` brings both back together rather than leaving the app running against a dead model.
 
-The split is code-in-image, state-on-host. Bind-mounted from the host: `config/` (the examples are tracked, the real files are not), `profile/`, `data/`, `runs/`, `bin/` (so the model command line can be tuned with a restart), `modules/llama.cpp` (the fork and its build tree), and the model caches `~/.cache/huggingface` and `~/.cache/llama.cpp`. Everything else is baked. The container runs as a user with the host's uid/gid so those directories stay owned by the host user.
+The split is code-in-image, state-on-host. Bind-mounted from the host: `config/` (the example is tracked, the real file is not), `data/`, `runs/`, `bin/` (so the model command line can be tuned with a restart), `modules/llama.cpp` (the fork and its build tree), and the model caches `~/.cache/huggingface` and `~/.cache/llama.cpp`. Everything else is baked. The container runs as a user with the host's uid/gid so those directories stay owned by the host user.
 
 The llama.cpp fork (`TheTom/llama-cpp-turboquant`, for its TurboQuant KV cache) is a git submodule at `modules/llama.cpp`, pinned to a commit. It is compiled inside the container by `bin/build-llama.sh` — CUDA on, `CMAKE_CUDA_ARCHITECTURES=native` so it targets the GPU present — into the bind-mounted submodule, which is what makes the build persistent: it survives container restarts, image rebuilds and `dock.sh clean`. `dock.sh build` compiles it if the binary is missing; `build-llama` forces it.
 
@@ -215,8 +237,8 @@ Both suites have caught real bugs: NULL list fields crashing the card renderer, 
 ## Layout
 
 ```
-config/            settings.yaml, preferences.yaml, sources.yaml
-profile/           your CV and notes (git-ignored); .cache/profile.json
+config/            settings.yaml (yours, git-ignored) and its example; sources.yaml (seed list)
+data/              jobs.db — postings, scores, decisions, accounts, CVs, notes, preferences (git-ignored)
 jobfinder/         the Python package
   sources/         one adapter per source type
   pipeline/        one module per stage; run.py orchestrates
@@ -230,5 +252,4 @@ jobfinder/         the Python package
 web/               the React app
 tests/             API contract tests
 runs/              per-run audit trail and the generated opencode config (git-ignored)
-data/jobs.db       the database (git-ignored)
 ```

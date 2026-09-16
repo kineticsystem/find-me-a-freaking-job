@@ -49,11 +49,11 @@ The model itself is downloaded on the first start, into `~/.cache/huggingface` o
 
 Everything the model knows about you comes from three things, all set from the web app. Until all three are done the app shows a checklist at the top of the page and does not scan at all — no postings are fetched until it knows who it is working for.
 
-Your own files — `config/settings.yaml`, `config/preferences.yaml`, `profile/notes.md` and your CV — are created on first start from the `.example` templates and are git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches them.
+All three are yours alone — one set per account, kept in the database at `data/jobs.db`, which is git-ignored: nothing personal is ever committed, and pulling new versions of the code never touches it. Back that one file up and you have everything. The only file you edit by hand is `config/settings.yaml`, created on first start from its `.example`.
 
 ### Your CV
 
-⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text. It is stored as `profile/cv.<ext>`; uploading again replaces it.
+⚙ → *Your profile* → *Upload CV*. PDF, Markdown or text; uploading again replaces it.
 
 ### Your notes
 
@@ -61,7 +61,7 @@ Your own files — `config/settings.yaml`, `config/preferences.yaml`, `profile/n
 
 ### Your preferences
 
-⚙ → *Your preferences*. Structured facts and hard limits, validated as you save:
+⚙ → *Your preferences*. Structured facts and hard limits, validated as you save and stored in the database. (Upgrading from a version that kept them in `config/preferences.yaml`: the file is imported on the first start and renamed to `.imported`.)
 
 | Field | What it does |
 |---|---|
@@ -78,9 +78,9 @@ Change any of this later and every stored job is re-scored on the next scan, wit
 
 Nothing to do up front: the shipped list of job boards and company career pages works as is, and every scan discovers more company boards from the postings it finds.
 
-To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers page — any URL. Most company career pages are a job board underneath (Greenhouse, Lever, Ashby or Workday), even when the page hides it behind JavaScript; the app finds the board, checks it answers, and registers it, so you get every opening, structured, with its own apply link. A page with no board behind it is registered as a web page: on every scan it is rendered in a headless browser and the model reads the text to extract the roles it lists. The same section lets you switch any source off, or remove one that only produces noise.
+To follow a specific company, open the web app, ⚙ → *Where it looks*, and paste its careers page — any URL. Most company career pages are a job board underneath (Greenhouse, Lever, Ashby or Workday), even when the page hides it behind JavaScript; the app finds the board, checks it answers, and registers it, so you get every opening, structured, with its own apply link. A page with no board behind it is registered as a web page: on every scan it is rendered in a headless browser and the model reads the text to extract the roles it lists. The list is yours: switching a source off hides its postings from you (not the ones you already shortlisted or applied to) and, if nobody else follows it, stops it being fetched. The searches the app runs from your own CV's vocabulary appear in the list too, so you can switch off one that only produces noise. Adding and removing a company changes your list only; someone else who added the same one keeps it.
 
-`config/sources.yaml` is the seed list used on a fresh install; edit it if you want companies followed from day one. Whether a source is on or off is decided in the web app and is not overwritten by the file.
+`config/sources.yaml` is the seed list used on a fresh install, followed by every account by default; edit it if you want companies followed from day one. Whether you follow a source is decided in the web app and is not overwritten by the file.
 
 ### The model — `config/settings.yaml`
 
@@ -102,7 +102,7 @@ As shipped it runs Qwen 3.8 27B, which fits a 24 GB card.
 ./docker/dock.sh jobfinder shell -c 'jobfinder.sh doctor'
 ```
 
-`start` brings the model server and the app up in the background; the model takes a few seconds to load. On the very first start your config files are created from the examples. `doctor` confirms the database exists, opencode answers, the model is reachable and your CV was read. Fix anything it flags before continuing.
+`start` brings the model server and the app up in the background; the model takes a few seconds to load. On the very first start `config/settings.yaml` is created from its example. `doctor` confirms the database exists, opencode answers, the model is reachable and your CV was read. Fix anything it flags before continuing.
 
 ## 4. First run
 
@@ -128,6 +128,8 @@ The server you started in step 3 is the long-running process. It runs the search
 
 **http://127.0.0.1:8099/**
 
+The first visit asks you to create your account — an email and a password — and that account is the admin, owning everything already in the database. After that it is a login screen. Nothing is stored that could give your password away: the database keeps a hash of it, and a hash of each login token, so a stolen `data/jobs.db` yields neither. If you prefer the terminal, `./docker/dock.sh jobfinder shell -c 'jobfinder.sh create-user you@example.com'` does the same.
+
 The app follows your device's light or dark theme; ⚙ → *Appearance* forces Light or Dark, remembered per browser. Search, filter by status / remote type / source / minimum score, sort by best match, newest or company. On each job: **Shortlist**, then **Applied**; **Not for me** when it is wrong for you; **Archive** to get it out of the way; **Delete** for junk. **Archive older than N days** clears out stale postings in one click without touching anything you shortlisted. **Scan now** triggers a search immediately; while a scan runs, a progress bar under the button shows the stage, how far through it is, and a time estimate, and the button becomes **Stop scan**. Stopping is safe: everything scored so far is kept, and the next scan carries on from there — postings are never stored twice, and only postings without a score get scored.
 
 **Not for me** asks why — tap a chip or two (*salary too low*, *on-site*, *agency / consultancy*, *wrong stack*…) and optionally a few words — and that is the one action that teaches the system. The reasons for your recent dismissals are shown to the model every time it scores a posting, as guidance about your taste, so the same kind of job stops scoring well. Archive carries no such signal: it just means "done with this one".
@@ -138,7 +140,7 @@ Job postings expire, and the archive-by-age feature exists for that reason: the 
 
 The container listens on every interface: open `http://<this machine's IP>:8099/` from any device on your network.
 
-For access from outside your network, put it behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [Tailscale](https://tailscale.com) rather than forwarding the port: the API has no login, and it can delete.
+For access from outside your network, put it behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [Tailscale](https://tailscale.com) rather than forwarding the port. The app has its own login, but a tunnel adds encryption and keeps the port itself off the internet.
 
 ### Cloudflare Tunnel
 
@@ -158,7 +160,13 @@ cloudflared tunnel run --url http://localhost:8099 jobs
 sudo cloudflared service install                       # run it as a system service from now on
 ```
 
-Then in the Cloudflare dashboard, Zero Trust → Access → Applications, add `jobs.yourdomain.com` with a policy that allows your email. That puts a one-time-code login in front of the app, which it does not have on its own.
+Optionally, in the Cloudflare dashboard, Zero Trust → Access → Applications, add `jobs.yourdomain.com` with a policy that allows your email: a one-time-code check in front of the app's own login.
+
+### More than one person
+
+The admin adds accounts from ⚙ → *Users* (email and a password, which the person can change from ⚙ → *Account*), or from the terminal with `jobfinder.sh create-user`. Each person has their own CV, notes, preferences, shortlist, applied list and dismissals, and is scored against their own; the postings are shared. A scan fetches once for everyone, then scores for each person whose profile is complete — one person with a finished profile is enough for scans to start; the others join as they complete theirs. Each person has their own source list: the seed list, what they added, what was discovered through their boards. A company one of you adds is yours alone to see; if two people add the same one it is fetched once, and boards discovered from a posting go to whoever follows the board the posting came from — one person's interests never reach another's list. The scan schedule is the installation's, so only the admin edits it.
+
+A forgotten password cannot be recovered, only replaced: the admin sets a new one from *Users*, which logs that person out everywhere.
 
 ### Keeping it running
 
@@ -181,7 +189,7 @@ Edit, then `./docker/dock.sh jobfinder stop` and `start` again.
 
 ### Starting over
 
-At the bottom of ⚙ Settings, in red: **Delete all jobs** clears every posting, score, decision and run but keeps your sources, CV, notes and preferences, so the next scan starts the search from scratch with the same setup. **Reset everything** also drops the sources back to the seed list. Both make you type `DELETE` and refuse to run during a scan. Neither touches the files.
+At the bottom of ⚙ Settings, in red: **Delete all jobs** clears every posting, score, decision and run but keeps the sources, accounts, CVs, notes and preferences, so the next scan starts the search from scratch with the same setup. **Reset everything** also drops the sources back to the seed list. Both make you type `DELETE` and refuse to run during a scan. Neither touches the files.
 
 ## Tests
 
@@ -216,7 +224,7 @@ test.sh                               # the API tests
 
 Every run leaves a full record in `runs/<timestamp>/`: each prompt sent to the model, each reply, and the JSON it produced. If a score does not make sense, that directory shows exactly what the model was told and what it said.
 
-`doctor` covers the common failures: model server down, no CV in `profile/`, a wrong `llm.base_url`.
+`doctor` covers the common failures: model server down, a user without a CV, a wrong `llm.base_url`.
 
 A broken `config/preferences.yaml` or `config/settings.yaml` (a typo while editing by hand) stops the app from starting, on purpose: it will not run on values it was not given. `./docker/dock.sh jobfinder start` then prints the reason — the file, the line and column, or the invalid field — and the fix is to correct the file and start again. Files saved from the web app are always valid; this only happens after hand edits. `./docker/dock.sh jobfinder shell -c 'jobfinder.sh check'` validates the files on demand.
 

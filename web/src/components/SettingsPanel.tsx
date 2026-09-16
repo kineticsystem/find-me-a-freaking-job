@@ -5,6 +5,9 @@ import { ProfileSection } from './ProfileSection'
 import { SourcesSection } from './SourcesSection'
 import { PreferencesSection } from './PreferencesSection'
 import { DangerZone } from './DangerZone'
+import { UsersSection } from './UsersSection'
+import { AccountSection } from './AccountSection'
+import type { User } from '../types'
 import { UNIT_MINUTES, describe, split, type Unit } from '../interval'
 import { getTheme, setTheme, type Theme } from '../theme'
 
@@ -14,10 +17,13 @@ interface Props {
   onSaved: (s: Settings) => void
   onChanged?: () => void   // anything in the panel changed: profile, preferences, sources
   notify: (text: string, error?: boolean) => void
+  self: User
+  onLoggedOut: () => void
 }
 
 
-export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Props) {
+export function SettingsPanel({ open, onClose, onSaved, onChanged, notify, self, onLoggedOut }: Props) {
+  const admin = self.is_admin
   const [current, setCurrent] = useState<Settings | null>(null)
   const [n, setN] = useState(2)
   const [unit, setUnit] = useState<Unit>('hours')
@@ -27,13 +33,13 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Pro
   const chooseTheme = (t: Theme) => { setTheme(t); setThemeState(t) }
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !self.is_admin) return
     api.getSettings().then((s) => {
       setCurrent(s)
       const { n, unit } = split(s.interval_minutes)
       setN(n); setUnit(unit); setRunOnStart(s.run_on_start)
     }).catch((e) => notify(e instanceof Error ? e.message : 'Could not load settings', true))
-  }, [open, notify])
+  }, [open, notify, self.is_admin])
 
   if (!open) return null
 
@@ -69,6 +75,7 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Pro
       </div>
       <div className="settings-hint">Remembered by this browser only, so your phone and your desktop can differ.</div>
 
+      {admin && <>
       <div className="settings-section">Scanning</div>
       <div className="settings-row">
         <label htmlFor="interval-n">Scan for jobs every</label>
@@ -95,10 +102,13 @@ export function SettingsPanel({ open, onClose, onSaved, onChanged, notify }: Pro
         </button>
       </div>
 
+      </>}
       <ProfileSection notify={notify} onChanged={onChanged} />
       <PreferencesSection notify={notify} onChanged={onChanged} />
       <SourcesSection notify={notify} />
-      <DangerZone notify={notify} onDone={() => { onSaved(current as Settings); onClose() }} />
+      {admin && <UsersSection self={self} notify={notify} />}
+      <AccountSection self={self} notify={notify} onLoggedOut={onLoggedOut} />
+      {admin && <DangerZone notify={notify} onDone={() => { onSaved(current as Settings); onClose() }} />}
 
       <div className="job-actions">
         <button className="btn btn-sm" onClick={onClose}>Close</button>

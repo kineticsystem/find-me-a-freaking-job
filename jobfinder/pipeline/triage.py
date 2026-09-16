@@ -9,7 +9,8 @@ from typing import Any
 
 from .. import db
 from ..config import settings
-from ..models import ProfileDigest, TriageBatch
+from ..models import TriageBatch
+from .profile import Candidate
 from ..opencode import OpencodeError, SessionCancelled, run_session
 from ..prompts import triage_prompt
 from ..textutil import truncate
@@ -32,10 +33,11 @@ def _row_to_entry(ref: int, row: Any) -> dict[str, Any]:
     }
 
 
-def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int) -> dict[str, Any]:
+def run_triage(cand: Candidate, workdir: Path, run_id: int) -> dict[str, Any]:
+    criteria = cand.criteria
     cfg = settings()
     batch_size = cfg.limits.triage_batch_size
-    pending = db.jobs_needing("triage", criteria, cfg.limits.max_jobs_per_run)
+    pending = db.jobs_needing("triage", criteria, cfg.limits.max_jobs_per_run, user_id=cand.user_id)
     stats: dict[str, Any] = {"triaged": 0, "batches": 0, "failed_batches": 0, "strong": 0}
     if not pending:
         return stats
@@ -58,7 +60,7 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
 
         try:
             result = run_session(
-                triage_prompt(digest, entries),
+                triage_prompt(cand, entries),
                 workdir / f"triage-{batch_no:03d}",
                 TriageBatch,
                 title=f"triage batch {batch_no}",
@@ -86,6 +88,7 @@ def run_triage(digest: ProfileDigest, criteria: str, workdir: Path, run_id: int)
                     run_id=run_id,
                     stage="triage",
                     criteria_hash=criteria,
+                    user_id=cand.user_id,
                     score=item.score,
                     verdict=item.verdict,
                     rationale=item.reason,

@@ -59,7 +59,7 @@ export function ProfileSection({ notify, onChanged }: Props) {
       <div className="settings-section">Your profile</div>
 
       <div className="settings-label">CV</div>
-      <div className="settings-hint">PDF, Markdown or text. It is stored as <code>profile/cv.&lt;ext&gt;</code>; the previous CV is removed. Nothing leaves this machine.</div>
+      <div className="settings-hint">PDF, Markdown or text. Yours alone: kept in the database, the previous one replaced. Nothing leaves this machine.</div>
       <div className="settings-row">
         <span className="profile-cv">
           {profile === null ? 'Loading…' : profile.cv
@@ -70,6 +70,9 @@ export function ProfileSection({ notify, onChanged }: Props) {
         <button className="btn btn-sm" disabled={uploading} onClick={() => fileInput.current?.click()}>
           {uploading ? 'Uploading…' : profile?.cv ? 'Replace CV' : 'Upload CV'}
         </button>
+        {profile?.cv && (
+          <button className="btn btn-sm" onClick={() => api.downloadCv().catch((e) => notify(e instanceof Error ? e.message : 'Download failed', true))}>Download</button>
+        )}
       </div>
 
       {profile?.digest && (

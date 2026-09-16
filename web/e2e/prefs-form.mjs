@@ -10,8 +10,14 @@ let failures = 0
 const check = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++ }
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
+const login = await fetch(BASE + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'demo-admin-password' }) })
+const TOKEN = (await login.json()).token
+const api = (path, init = {}) => fetch(BASE + path, { ...init, headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers ?? {}) } })
+
 const browser = await chromium.launch()
-const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+const ctx = await browser.newContext({ viewport: { width: 1000, height: 1400 } })
+await ctx.addInitScript((t) => localStorage.setItem('jobfinder.token', t), TOKEN)
+const page = await ctx.newPage()
 const errors = []
 page.on('pageerror', (e) => errors.push(e.message))
 page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d/.test(m.text())) errors.push(m.text()) })
@@ -27,7 +33,7 @@ await page.route('**/preferences', (route) => {
 })
 await page.goto(BASE + '/'); await page.waitForSelector('.job')
 await page.click('button[aria-label="Settings"]'); await page.waitForSelector('.prefs .chip-value')
-const original = (await (await fetch(BASE + '/preferences')).json()).preferences
+const original = (await (await api('/preferences')).json()).preferences
 
 const realClick = async (locator) => { await locator.scrollIntoViewIfNeeded(); const b = await locator.boundingBox(); await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2) }
 const saveBtn = page.locator('button:has-text("Save preferences")')
@@ -134,7 +140,7 @@ check((await page.inputValue('.prefs-grid label:has-text("Based in") input')) ==
 
 check(errors.length === 0, `no console/page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
 await browser.close()
-const after = (await (await fetch(BASE + '/preferences')).json()).preferences
+const after = (await (await api('/preferences')).json()).preferences
 check(eq(after, original), 'real preferences.yaml untouched by this test')
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures ? 1 : 0)

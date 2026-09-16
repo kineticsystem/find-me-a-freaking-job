@@ -19,12 +19,13 @@ FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 LABEL name="find-me-a-freaking-job"
 
 # git, curl: opencode and its installer. The rest: building llama.cpp with
-# CUDA and with libcurl for --hf-repo model downloads.
+# CUDA and with OpenSSL, which its HTTP client needs to download models from
+# Hugging Face over HTTPS (--hf-repo).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git curl ca-certificates \
       python3 python3-venv python3-pip \
-      build-essential cmake ninja-build pkg-config libcurl4-openssl-dev \
+      build-essential cmake ninja-build pkg-config libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Chromium's system libraries, for rendering careers pages that build their
@@ -42,8 +43,11 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
 
 ARG USER_UID=1000
 ARG USER_GID=1000
-RUN groupadd -g ${USER_GID} developer \
- && useradd --create-home --shell /bin/bash --uid ${USER_UID} --gid ${USER_GID} developer
+# The host's gid may already be a system group in the image (20 is dialout on
+# a Mac's host, 100 is users); the number is all the bind mounts care about,
+# so reuse it rather than fail.
+RUN getent group ${USER_GID} >/dev/null || groupadd -g ${USER_GID} developer
+RUN useradd --create-home --shell /bin/bash --uid ${USER_UID} --gid ${USER_GID} developer
 
 USER developer
 ENV HOME=/home/developer
@@ -75,7 +79,7 @@ COPY --chown=developer:developer --from=web /web/dist ./web/dist/
 
 # State and the llama.cpp source+build live in these; compose bind-mounts
 # them from the host. The model cache is mounted under ~/.cache.
-RUN mkdir -p config profile data runs modules/llama.cpp /home/developer/.cache
+RUN mkdir -p config data runs modules/llama.cpp /home/developer/.cache
 
 # ./bin on the PATH so `docker exec <name> run-once.sh` works without a shell,
 # and the venv and opencode likewise.

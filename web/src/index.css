@@ -295,3 +295,21 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; }
   .source-list li .btn { flex: 0 0 auto; }
   .chip-btn { min-height: 32px; padding: 4px 12px; }
 }
+
+/* login */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+.login { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+.login .brand { font-size: 20px; font-weight: 700; }
+.login-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.login-field input { padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 15px; }
+.login .btn-primary { margin-top: 4px; min-height: 40px; }
+
+/* users */
+.users-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; align-self: stretch; }
+.users-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.users-email { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 6px; }
+.users-meta { font-size: 12px; color: var(--muted); }
+.users-reset { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.users-reset input { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); }
+.chip-admin { background: var(--accent); color: #fff; }
+.settings-check { display: flex; align-items: center; gap: 6px; font-size: 13px; }

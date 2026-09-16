@@ -5,7 +5,7 @@ One container runs everything: the model server (the llama.cpp fork), the app se
 ## What is where
 
 - **In the image:** the Python code, the agent prompts, the built web app, opencode, headless Chromium (for career pages that render their listings in JavaScript), the CUDA toolchain and build tools, and all dependencies. Rebuild the image to pick up code changes.
-- **On the host, bind-mounted:** `config/`, `profile/`, `data/`, `runs/` — everything you edit and everything the app persists — and `modules/llama.cpp`, the llama.cpp fork with its build tree. Survives rebuilds, restarts and `clean`. Your own files in `config/` and `profile/` are created from the `.example` templates on first start and are git-ignored.
+- **On the host, bind-mounted:** `config/`, `data/`, `runs/` — everything you edit and everything the app persists — and `modules/llama.cpp`, the llama.cpp fork with its build tree. Survives rebuilds, restarts and `clean`. `config/settings.yaml` is created from its `.example` on first start and is git-ignored; everything personal is in `data/jobs.db`.
 - **Model files:** `~/.cache/huggingface` and `~/.cache/llama.cpp` on the host are mounted into the container, so a model already downloaded is reused, and one downloaded from inside the container stays on the host.
 
 The container runs as a user with your uid/gid, so files it writes into those directories are owned by you.

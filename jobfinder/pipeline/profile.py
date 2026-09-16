@@ -1,19 +1,26 @@
-"""Turn the CV folder into a small structured digest, once, and cache it.
+"""Who the search is for: each user's CV, notes and preferences, and the
+model's digest of the CV.
 
-The digest goes into every reasoning prompt, so it must stay under roughly 800
-tokens. It is re-derived only when the CV or the notes actually change.
+Everything lives in the database (`user_profile`, `user_preferences`), one
+row per user, so a backup of jobs.db is everything.
+
+The digest goes into every reasoning prompt, so it must stay under roughly
+800 tokens. It is re-derived only when the CV or the notes actually change.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from ..config import settings
+from .. import db
+from ..config import DEFAULT_USER_ID, Preferences, preferences
 from ..models import ProfileDigest
 from ..opencode import run_session
 from ..prompts import profile_prompt
@@ -23,122 +30,133 @@ log = logging.getLogger(__name__)
 
 CV_SUFFIXES = (".md", ".txt", ".pdf")
 MAX_CV_CHARS = 24000
-
-
-def profile_dir() -> Path:
-    p = settings().paths.resolve("profile")
-    (p / ".cache").mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _cv_files() -> list[Path]:
-    """Only files named cv.<ext> (cv.pdf, cv.md, cv.txt) count as the CV. The
-    folder also holds notes, an example and a README, none of which are."""
-    root = profile_dir()
-    return sorted(
-        p for p in root.iterdir()
-        if p.is_file() and p.suffix.lower() in CV_SUFFIXES and p.stem.lower() == "cv"
-    )
-
-
-def _read_pdf(path: Path) -> str:
-    try:
-        from pypdf import PdfReader
-    except ImportError:  # pragma: no cover
-        log.warning("pypdf not installed; cannot read %s", path.name)
-        return ""
-    try:
-        return "\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages)
-    except Exception as exc:
-        log.warning("could not read %s: %s", path.name, exc)
-        return ""
-
-
-def cv_text() -> str:
-    chunks = []
-    for path in _cv_files():
-        text = _read_pdf(path) if path.suffix.lower() == ".pdf" else path.read_text(errors="replace")
-        text = clean(text)
-        if text:
-            chunks.append(f"--- {path.name} ---\n{text}")
-    return truncate("\n\n".join(chunks), MAX_CV_CHARS)
-
-
+CV_MAX_BYTES = 10 * 1024 * 1024
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 
-def notes_text() -> str:
-    """The notes with HTML comments removed: the example file is one long
-    comment, so an untouched file reads as empty."""
-    notes = profile_dir() / "notes.md"
-    if not notes.exists():
+@dataclass
+class Candidate:
+    """One user as the pipeline sees them. Built by `load`; the digest is
+    filled in by `load_digest` when a model is available."""
+
+    user_id: int
+    name: str
+    prefs: Preferences
+    cv_text: str
+    notes: str
+    digest: ProfileDigest | None = None
+    stale_digest: dict[str, Any] | None = field(default=None, repr=False)
+
+    @property
+    def source_hash(self) -> str:
+        """Identity of the CV + notes the digest is derived from."""
+        return hashlib.sha256((self.cv_text + "\x00" + self.notes).encode()).hexdigest()[:16]
+
+    @property
+    def criteria(self) -> str:
+        from .criteria import criteria_hash
+
+        return criteria_hash(self.source_hash, self.prefs.fingerprint)
+
+    @property
+    def readiness(self) -> dict[str, bool]:
+        cv_ok = bool(self.cv_text.strip())
+        notes_ok = bool(self.notes.strip())
+        prefs_ok = bool(self.prefs.titles) and bool(self.prefs.based_in.strip())
+        return {"cv": cv_ok, "notes": notes_ok, "preferences": prefs_ok, "ready": cv_ok and notes_ok and prefs_ok}
+
+    @property
+    def ready(self) -> bool:
+        return self.readiness["ready"]
+
+
+def _read_pdf(data: bytes, name: str) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:  # pragma: no cover
+        log.warning("pypdf not installed; cannot read %s", name)
         return ""
-    return clean(_HTML_COMMENT.sub("", notes.read_text(errors="replace")))
+    try:
+        return "\n".join((page.extract_text() or "") for page in PdfReader(io.BytesIO(data)).pages)
+    except Exception as exc:
+        log.warning("could not read %s: %s", name, exc)
+        return ""
 
 
-def source_hash() -> str:
-    return hashlib.sha256((cv_text() + "\x00" + notes_text()).encode()).hexdigest()[:16]
+def extract_cv_text(name: str, data: bytes) -> str:
+    text = _read_pdf(data, name) if name.lower().endswith(".pdf") else data.decode("utf-8", errors="replace")
+    text = clean(text)
+    return truncate(f"--- {name} ---\n{text}", MAX_CV_CHARS) if text else ""
 
 
-def _cache_path() -> Path:
-    return profile_dir() / ".cache" / "profile.json"
+def _clean_notes(raw: str) -> str:
+    """HTML comments removed: the example file is one long comment, so an
+    untouched template reads as empty."""
+    return clean(_HTML_COMMENT.sub("", raw or ""))
 
 
-def profile_fingerprint() -> str:
-    """Identity of the digest currently in force (it is derived from the CV)."""
-    return source_hash()
-
-
-def load_digest(workdir: Path, force: bool = False) -> ProfileDigest:
-    """Return the cached digest, rebuilding it if the CV changed."""
-    cache = _cache_path()
-    current = source_hash()
-
-    if not force and cache.exists():
+def load(user_id: int) -> Candidate:
+    row = db.get_profile(user_id)
+    user = db.get_user(user_id)
+    cand = Candidate(
+        user_id=user_id,
+        name=(user or {}).get("email") or (user or {}).get("name") or f"user {user_id}",
+        prefs=preferences(user_id),
+        cv_text=row["cv_text"] or "",
+        notes=_clean_notes(row["notes"]),
+    )
+    if row["digest"] and row["digest_hash"] == cand.source_hash:
         try:
-            data = json.loads(cache.read_text())
-            if data.get("source_hash") == current:
-                return ProfileDigest.model_validate(data["digest"])
-            log.info("CV or notes changed; rebuilding profile digest")
+            cand.digest = ProfileDigest.model_validate(json.loads(row["digest"]))
         except Exception as exc:
-            log.warning("profile cache unreadable (%s); rebuilding", exc)
+            log.warning("stored digest for user %d unreadable (%s); will rebuild", user_id, exc)
+    return cand
 
-    text = cv_text()
-    if not text.strip():
-        raise FileNotFoundError(
-            f"No CV found. Put a cv.pdf, cv.md or cv.txt in {profile_dir()} "
-            "and describe what you want in notes.md."
-        )
 
+def candidates() -> list[Candidate]:
+    """Every user who can be searched for: CV, notes and preferences all present."""
+    return [c for c in (load(u["id"]) for u in db.list_users()) if c.ready]
+
+
+def cv_text(user_id: int = DEFAULT_USER_ID) -> str:
+    return db.get_profile(user_id)["cv_text"] or ""
+
+
+def notes_text(user_id: int = DEFAULT_USER_ID) -> str:
+    return _clean_notes(db.get_profile(user_id)["notes"])
+
+
+def readiness(user_id: int = DEFAULT_USER_ID) -> dict[str, bool]:
+    return load(user_id).readiness
+
+
+def load_digest(cand: Candidate, workdir: Path, force: bool = False) -> ProfileDigest:
+    """The stored digest if it matches the current CV + notes, else a fresh
+    one from the model, stored."""
+    if cand.digest is not None and not force:
+        return cand.digest
+    if not cand.cv_text.strip():
+        raise FileNotFoundError(f"No CV for {cand.name}: upload one in the web app (Settings → Profile).")
+    log.info("building profile digest for %s", cand.name)
     digest = run_session(
-        profile_prompt(text, notes_text()),
-        workdir / "profile",
+        profile_prompt(cand.cv_text, cand.notes),
+        workdir / f"profile-{cand.user_id}",
         ProfileDigest,
-        title="profile digest",
+        title=f"profile digest ({cand.name})",
     )
-    cache.write_text(
-        json.dumps({"source_hash": current, "digest": digest.model_dump()}, indent=2)
-    )
-    log.info("profile digest rebuilt (%s)", digest.headline or "unnamed")
+    db.save_digest(cand.user_id, cand.source_hash, digest.model_dump_json(indent=2))
+    cand.digest = digest
+    log.info("profile digest built for %s (%s)", cand.name, digest.headline or "unnamed")
     return digest
 
 
 # --------------------------------------------------------------------------
 # Editing the profile from the API
 # --------------------------------------------------------------------------
-CV_MAX_BYTES = 10 * 1024 * 1024
-
-
-def cv_files() -> list[Path]:
-    return _cv_files()
-
-
-def replace_cv(filename: str, data: bytes) -> Path:
-    """Store an uploaded CV as profile/cv.<ext>, removing any previous CV.
-
-    The digest cache is keyed on the CV's content, so the next run rebuilds
-    the profile and, through the criteria hash, re-scores every job.
-    """
+def replace_cv(user_id: int, filename: str, data: bytes) -> str:
+    """Store an uploaded CV as this user's; the digest is keyed on the CV's
+    content, so the next run rebuilds it and, through the criteria hash,
+    re-scores every job for them."""
     ext = Path(filename).suffix.lower()
     if ext not in CV_SUFFIXES:
         raise ValueError(f"unsupported file type {ext or '(none)'}; use one of {', '.join(CV_SUFFIXES)}")
@@ -148,63 +166,26 @@ def replace_cv(filename: str, data: bytes) -> Path:
         raise ValueError(f"file is larger than {CV_MAX_BYTES // (1024 * 1024)} MB")
     if ext == ".pdf" and not data.startswith(b"%PDF"):
         raise ValueError("that does not look like a PDF")
-
-    root = profile_dir()
-    for old in _cv_files():
-        old.unlink()
-    target = root / f"cv{ext}"
-    target.write_bytes(data)
-    _cache_path().unlink(missing_ok=True)
-    log.info("CV replaced: %s (%d bytes)", target.name, len(data))
-    return target
+    name = f"cv{ext}"
+    db.save_cv(user_id, name, data, extract_cv_text(name, data))
+    log.info("CV replaced for user %d: %s (%d bytes)", user_id, name, len(data))
+    return name
 
 
-def write_notes(text: str) -> Path:
-    path = profile_dir() / "notes.md"
-    path.write_text(text.rstrip() + "\n")
-    _cache_path().unlink(missing_ok=True)
-    return path
+def write_notes(user_id: int, text: str) -> None:
+    db.save_notes(user_id, text.rstrip() + "\n" if text.strip() else "")
 
 
-def readiness() -> dict:
-    """What the first scan still needs. The UI shows this as a checklist and
-    the pipeline will not score until `ready` is true."""
-    from ..config import preferences
-
-    prefs = preferences()
-    cv_ok = len(cv_text()) > 0
-    notes_ok = len(notes_text()) > 0
-    prefs_ok = bool(prefs.titles) and bool(prefs.based_in.strip())
-    return {
-        "cv": cv_ok,
-        "notes": notes_ok,
-        "preferences": prefs_ok,
-        "ready": cv_ok and notes_ok and prefs_ok,
-    }
-
-
-def profile_status() -> dict:
-    """What the UI shows: the CV on disk, the notes, and the cached digest."""
-    files = _cv_files()
-    cv = None
-    if files:
-        f = files[0]
-        st = f.stat()
-        cv = {"name": f.name, "bytes": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds")}
-    digest = None
-    cache = _cache_path()
-    if cache.exists():
-        try:
-            data = json.loads(cache.read_text())
-            if data.get("source_hash") == source_hash():
-                digest = data["digest"]
-        except Exception:
-            digest = None
+def profile_status(user_id: int) -> dict[str, Any]:
+    """What the UI shows: the CV, the notes, the digest if it is current."""
+    row = db.get_profile(user_id)
+    cand = load(user_id)
+    cv = {"name": row["cv_name"], "bytes": row["cv_bytes"], "modified": row["cv_updated_at"]} if row["cv_name"] else None
     return {
         "cv": cv,
-        "cv_files": [f.name for f in files],
-        "cv_chars": len(cv_text()),
-        "notes": notes_text(),
-        "digest": digest,
-        "digest_current": digest is not None,
+        "cv_files": [row["cv_name"]] if row["cv_name"] else [],
+        "cv_chars": len(cand.cv_text),
+        "notes": row["notes"] or "",
+        "digest": cand.digest.model_dump() if cand.digest else None,
+        "digest_current": cand.digest is not None,
     }

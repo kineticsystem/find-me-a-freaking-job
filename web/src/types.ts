@@ -81,15 +81,29 @@ export interface Progress {
   stopping?: boolean
 }
 
+export interface User {
+  id: number
+  name: string
+  email: string | null
+  is_admin: boolean
+  can_login: boolean
+  created_at: string
+  tokens?: number
+}
+
+export interface LoginResult { token: string; expires_at: string; user: User }
+
 export interface Health {
   ok: boolean
+  needs_setup: boolean
   progress: Progress
-  stale_scores: number
-  setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean }
+  stale_scores: number | null
+  /** Per-user parts: null when the request carried no valid token. */
+  setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean } | null
   running: boolean
   next_run: string | null
   interval_minutes: number
-  stats: Record<string, number>
+  stats: Record<string, number> | null
 }
 
 export interface JobQuery {
@@ -131,8 +145,9 @@ export interface Profile {
 export interface Source {
   id: string
   type: string
-  origin: 'config' | 'discovered' | 'user'
-  enabled: number
+  origin: 'config' | 'discovered' | 'user' | 'keyword'
+  enabled: number          // the registry switch (auto-off after repeated failures)
+  following: number        // your own switch
   config: Record<string, unknown>
   added_at: string
   last_run_at: string | null

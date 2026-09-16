@@ -3,9 +3,10 @@ import * as api from './api'
 import { Filters } from './components/Filters'
 import { JobCard } from './components/JobCard'
 import { SettingsPanel } from './components/SettingsPanel'
+import { Login } from './components/Login'
 import { describe } from './interval'
 import { ScanProgress } from './components/ScanProgress'
-import type { Facets, Health, Job, JobQuery, Status } from './types'
+import type { Facets, Health, Job, JobQuery, Status, User } from './types'
 import { DEFAULT_QUERY } from './types'
 
 interface Toast { text: string; error?: boolean }
@@ -19,7 +20,25 @@ function useDebounced<T>(value: T, ms: number): T {
   return v
 }
 
+/** Gate: who is logged in. `undefined` while the stored token is being checked. */
 export default function App() {
+  const [user, setUser] = useState<User | null | undefined>(undefined)
+  const [needsSetup, setNeedsSetup] = useState(false)
+
+  useEffect(() => {
+    api.setUnauthorizedHandler(() => setUser(null))
+    const check = api.getToken() ? api.me().then(setUser).catch(() => setUser(null)) : Promise.resolve().then(() => setUser(null))
+    check.then(() => api.getHealth()).then((h) => setNeedsSetup(h.needs_setup)).catch(() => {})
+    return () => api.setUnauthorizedHandler(null)
+  }, [])
+
+  if (user === undefined) return null
+  if (!user) return <Login firstUser={needsSetup} onLoggedIn={(u) => { setNeedsSetup(false); setUser(u) }} />
+  return <Workspace user={user} onLoggedOut={() => setUser(null)} />
+}
+
+
+function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void }) {
   const [query, setQuery] = useState<JobQuery>(DEFAULT_QUERY)
   const debouncedQ = useDebounced(query.q, 250)
   const effective: JobQuery = { ...query, q: debouncedQ }
@@ -164,7 +183,7 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-row">
           <div className="brand">
-            <div>🎯 Find Me a Freaking Job<small>{health ? `${health.stats.jobs} stored` : ''}</small></div>
+            <div>🎯 Find Me a Freaking Job<small>{health?.stats ? `${health.stats.jobs} stored` : ''}</small></div>
             <a className="brand-link" href="http://www.findmeafreakingjob.com" target="_blank" rel="noreferrer noopener">www.findmeafreakingjob.com</a>
           </div>
           <div className="search">
@@ -182,9 +201,9 @@ export default function App() {
       </header>
 
       <main className="main">
-        {health && !health.setup.ready && (
+        {health?.setup && !health.setup.ready && (
           <div className="banner setup" role="status">
-            <strong>Complete your <button className="linkish" onClick={() => setSettingsOpen(true)}>⚙ Settings</button> before the first scan:</strong>
+            <strong>Complete your <button className="linkish" onClick={() => setSettingsOpen(true)}>⚙ Settings</button> before your first scan:</strong>
             <ul>
               <li className={health.setup.cv ? 'done' : ''}>{health.setup.cv ? '✓' : '○'} Upload your CV</li>
               <li className={health.setup.notes ? 'done' : ''}>{health.setup.notes ? '✓' : '○'} Write your notes — what you want, in your own words</li>
@@ -192,7 +211,7 @@ export default function App() {
             </ul>
           </div>
         )}
-        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={() => { refreshMeta(); load(effective, 0) }} onChanged={refreshMeta} notify={notify} />
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={() => { refreshMeta(); load(effective, 0) }} onChanged={refreshMeta} notify={notify} self={user} onLoggedOut={onLoggedOut} />
         <Filters query={query} facets={facets} open={filtersOpen} onChange={patch} onReset={() => setQuery({ ...DEFAULT_QUERY, q: query.q })} />
 
         <div className="summary">
@@ -202,10 +221,10 @@ export default function App() {
               {(health.running ? '● scan in progress' : nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') + ` · every ${describe(health.interval_minutes)}`}
             </span>
           )}
-          {health && health.stale_scores > 0 && (
+          {health?.setup && health.stale_scores != null && health.stale_scores > 0 && (
             <span title="Faded scores are from before your last CV, notes or preferences change">
               {health.stale_scores} score{health.stale_scores === 1 ? '' : 's'} from before your last change
-              {health.running ? ' · re-scoring now' : <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup.ready}>re-score now</button></>}
+              {health.running ? ' · re-scoring now' : user.is_admin && <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup?.ready}>re-score now</button></>}
             </span>
           )}
           <span className="spacer" style={{ flex: 1 }} />
@@ -218,13 +237,15 @@ export default function App() {
 
         <div className="scan-row">
           {health?.running ? (
-            <button className="btn btn-scan btn-danger" onClick={onStop} disabled={health.progress.stopping}>
-              {health.progress.stopping ? 'Stopping…' : '■ Stop scan'}
-            </button>
+            user.is_admin ? (
+              <button className="btn btn-scan btn-danger" onClick={onStop} disabled={health.progress.stopping}>
+                {health.progress.stopping ? 'Stopping…' : '■ Stop scan'}
+              </button>
+            ) : <span className="btn-note">a scan is running</span>
           ) : (
-            <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health || !health.setup.ready}>▶ Scan now</button>
+            user.is_admin && <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health?.setup?.ready}>▶ Scan now</button>
           )}
-          {health && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
+          {user.is_admin && health?.setup && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
         </div>
         {health?.running && <ScanProgress p={health.progress} />}
 

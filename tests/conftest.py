@@ -22,8 +22,7 @@ def _never_touch_real_files(tmp_path, monkeypatch):
     import jobfinder.config as config
 
     cfg_dir = tmp_path / "config"; cfg_dir.mkdir()
-    for name in ("settings.example.yaml", "preferences.example.yaml"):
-        (cfg_dir / name).write_text((config.CONFIG_DIR / name).read_text())
+    (cfg_dir / "settings.example.yaml").write_text((config.CONFIG_DIR / "settings.example.yaml").read_text())
     (cfg_dir / "settings.yaml").write_text("interval_minutes: 720\n")
     (cfg_dir / "preferences.yaml").write_text("based_in: Testland\ntitles: [Engineer]\n")
     monkeypatch.setattr(config, "CONFIG_DIR", cfg_dir)
@@ -44,10 +43,10 @@ def tmp_db(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def criteria(monkeypatch):
-    """Pin the criteria hash so tests don't depend on the real CV on disk."""
+    """Pin the criteria hash so tests don't depend on a stored CV."""
     from jobfinder.pipeline import criteria as crit
 
-    monkeypatch.setattr(crit, "current_criteria_hash", lambda: "test-criteria")
+    monkeypatch.setattr(crit, "current_criteria_hash", lambda user_id=1: "test-criteria")
     return "test-criteria"
 
 
@@ -68,7 +67,10 @@ def make_job(company: str, title: str, location: str = "Remote", **kw) -> Normal
 
 @pytest.fixture()
 def seeded(tmp_db, criteria):
-    """Three jobs: one strong (deep-dived), one triaged only, one unevaluated."""
+    """Three jobs: one strong (deep-dived), one triaged only, one unevaluated.
+    Their two sources are registered and followed by user 1."""
+    db.upsert_source({"id": "test", "type": "remoteok", "enabled": True}, origin="user", followers=[1])
+    db.upsert_source({"id": "gh-globex", "type": "greenhouse", "slug": "globex", "enabled": True}, origin="user", followers=[1])
     with db.connect() as conn:
         a, _ = db.upsert_job(conn, make_job("Acme", "Senior C++ Engineer", "Remote US"))
         b, _ = db.upsert_job(conn, make_job("Globex", "Python Backend Developer", "Amsterdam, Netherlands",
@@ -85,7 +87,7 @@ def seeded(tmp_db, criteria):
 
 
 @pytest.fixture()
-def client(seeded):
+def anon_client(seeded):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -96,3 +98,28 @@ def client(seeded):
     app.router.routes = list(api.app.router.routes)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def client(anon_client):
+    """Logged in as the admin (user 1), who owns the seeded data. Tests that
+    need the anonymous client or a second user take ``anon_client``."""
+    from jobfinder import auth
+    from jobfinder.config import DEFAULT_USER_ID
+
+    db.claim_user(DEFAULT_USER_ID, "admin@example.com", auth.hash_password("admin-pass-1"), is_admin=True)
+    r = anon_client.post("/auth/login", json={"email": "admin@example.com", "password": "admin-pass-1"})
+    anon_client.headers["Authorization"] = f"Bearer {r.json()['token']}"
+    return anon_client
+
+
+def make_candidate(user_id: int = 1, notes: str = "", cv: str = "# Jane Doe\nEngineer.", **digest_kw):
+    """A Candidate with a digest, no model call."""
+    from jobfinder.config import preferences
+    from jobfinder.models import ProfileDigest
+    from jobfinder.pipeline.profile import Candidate
+
+    digest = ProfileDigest(**{"headline": "Senior C++ engineer", "core_skills": ["C++"],
+                              "summary": "Twenty years of C++ on desktop and robotics software.",
+                              "search_keywords": ["c++", "qt", "ros2"], **digest_kw})
+    return Candidate(user_id=user_id, name=f"user {user_id}", prefs=preferences(user_id), cv_text=cv, notes=notes, digest=digest)
