@@ -14,6 +14,8 @@ A local model driving a browser through LinkedIn is the slowest, most fragile an
 
 ## Pipeline
 
+For one posting's path through all of this, with a sequence diagram and the exact role of opencode, the model and the database at each step, see [retrieve_and_score.md](retrieve_and_score.md).
+
 ```
                  ┌─ discovery ─────────────────────────────────────────┐
                  │  A harvest   scan fetched postings for ATS links     │
