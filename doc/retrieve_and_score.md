@@ -16,10 +16,6 @@ The database is the only state. A posting, a user's decisions on it and every sc
 
 ## The sequence
 
-![Sequence diagram of one scan](retrieve_and_score.png)
-
-<details> <summary>Mermaid source</summary>
-
 ```mermaid
 sequenceDiagram
     autonumber
@@ -66,8 +62,6 @@ sequenceDiagram
 
     note over D: The web app reads each posting with its best evaluation
 ```
-
-</details>
 
 ## Step by step
 
