@@ -4,7 +4,7 @@ A walk through one scan, from a job board to a score on a card, with the three p
 
 ## The short version
 
-The scan is deterministic Python everywhere except two moments: when the model is asked to *understand* something. Fetching, deduplicating, filtering and storing never involve a model. The model sees a posting only after it is already in the database, and only to answer one question about it: how well does it fit this candidate. Its answer is written back as a row. Nothing the model says changes what is stored about the posting itself.
+The scan is deterministic Python except where the model is asked to *understand* something, and that happens in two different places. The first is retrieval, but only for sources that are prose rather than data: a company board has an API and is read without any model; a careers page with no board behind it, or the HN "Who is hiring" thread, is text, and the model is what turns that text into postings. The second is scoring: once a posting is in the database, the model is asked one question about it, how well it fits this candidate, and its answer is written back as a row. Reading and judging are separate calls with separate prompts; a posting the model extracted is stored like any other and scored later like any other.
 
 opencode is the way the model is called. The pipeline never speaks HTTP to llama.cpp for scoring; it writes a prompt, starts one `opencode run` process per judgement, and reads one JSON file back. opencode is the agent runtime that hands the prompt to the model, gives it a `write` tool, and stops when the model has written `result.json`.
 
@@ -87,11 +87,19 @@ This is the first place opencode appears, and it works the same way every time i
 
 Everything about the call is kept under `runs/<timestamp>/<session>/`: the prompt, opencode's stdout and stderr, and the file the model wrote. When a score looks wrong, that directory says why.
 
-### 3. Fetch (no model)
+### 3. Fetch (no model for boards and feeds; the model reads the prose sources)
 
 `active_sources()` returns every registry row that is on, not paused after repeated failures, and followed by at least one user. `fetch_all` runs one adapter per source in a thread pool: Greenhouse, Lever, Ashby and Workday boards through their JSON APIs, aggregators through their feeds, a plain careers page through a headless browser. Each adapter returns `RawJob` records; a failing board is recorded against that source and does not stop the run. Keyword queries built from each user's digest (the Jobicy searches) run here too, one set per user.
 
 A typical run brings back about 4,000 raw postings.
+
+**Where the model is part of fetching.** Not every source hands back data. Three kinds hand back text, and for those the model is the parser:
+
+- A `webpage` source, a careers page with no job board behind it, is rendered in a headless browser; the result is the page's text and its labelled links, one blob flagged `needs_extraction`, not a list of postings.
+- The HN "Who is hiring" thread is fetched as comments; each comment is a blob flagged the same way.
+- An `llm_explorer` source goes further: the `job-explorer` agent, the one agent allowed the web-fetch tool, is pointed at the URL and browses it, following at most one level of links into individual postings, and returns what it found already structured.
+
+For the first two, the **extract** stage runs right after the fetch and before the prefilter: the blobs go to the model in small batches, with the schema of a posting, and it writes out every posting it can see in the text as a structured record: company, title, location, remote type, salary if stated, description, apply link. Each blob is only ever extracted once, and the stage is capped per run (`limits.max_extract_batches`) because it is output-heavy. What comes back is a `RawJob` exactly like one from a Greenhouse board, and from here on nothing distinguishes them. Most company pages never reach this path: when you paste a careers URL the app first looks for the board the page loads its jobs from (Discord, for example, is a Greenhouse board underneath and is read as data), and falls back to a rendered page only when there is none.
 
 ### 4. Prefilter and store (no model)
 
@@ -123,9 +131,9 @@ The web app never sees the model. `GET /jobs` runs one query that joins each vis
 
 | | Does | Never does |
 |---|---|---|
-| Python pipeline | fetches, deduplicates, filters, stores, decides what needs scoring, validates every answer, records it | judges fit |
+| Python pipeline | fetches boards and feeds, renders pages, deduplicates, filters, stores, decides what needs scoring, validates every answer, records it | judges fit, reads prose |
 | opencode | runs one model session per judgement in a clean process with a fixed agent and one tool, hands back a file | keep state, choose what to score, talk to the database |
-| Model (via llama.cpp) | reads the context block and the postings, writes a JSON answer | see the database, fetch anything, remember a previous call |
+| Model (via llama.cpp) | turns the text of a prose source into postings (extract); reads the context block and the postings and writes a JSON judgement (triage, deep dive); as the explorer agent, browses a page it was pointed at | see the database, choose what to fetch or score, remember a previous call |
 | SQLite | holds postings, sources, users, profiles, decisions and every evaluation with its criteria hash | hold anything derived that cannot be rebuilt from it |
 
 ## Why it is built this way
@@ -135,5 +143,7 @@ The web app never sees the model. `GET /jobs` runs one query that joins each vis
 **The model is called through a file contract.** A subprocess that must write `result.json` matching a schema is easier to make reliable than a streaming chat response: an answer either validates or the call is retried with the error shown to the model. It also makes every call auditable after the fact.
 
 **opencode rather than a direct API call.** The tool-calling loop, the agent definition, the provider configuration and the process isolation come for free, and the same runner serves the explorer agent, which is allowed to fetch web pages. The price is a ~15K-token system prompt per session and a process start; for a batch of twelve postings that is acceptable, and the batching exists partly to amortise it.
+
+**Reading and judging are separate.** The model that extracts a posting from a page is not asked whether the posting is any good; that is a later call with the candidate's context. Keeping the two apart means an extraction prompt has no candidate in it and can be shared by everyone, and a judgement is always made on the same stored record, whichever way it arrived.
 
 **Nothing is scored before it is stored.** The database is the queue. A scan interrupted at any point loses nothing: what was fetched is stored, what was scored is recorded, and the next scan picks up the rest because "needs scoring" is a query, not a list held in memory.
