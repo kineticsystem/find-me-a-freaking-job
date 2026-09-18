@@ -19,86 +19,48 @@ The database is the only state. A posting, a user's decisions on it and every sc
 ```mermaid
 sequenceDiagram
     autonumber
-    participant S as Scheduler / Scan now
-    participant R as run.py
-    participant P as profile.py
-    participant F as fetch.py + sources/
-    participant B as Job boards (HTTP)
-    participant D as SQLite jobs.db
-    participant T as triage.py / deepdive.py
-    participant O as opencode (subprocess)
-    participant M as llama.cpp model
+    participant P as Pipeline (Python)
+    participant B as Job boards
+    participant D as Database
+    participant O as opencode
+    participant M as Model
 
-    S->>R: run_once()
-    R->>P: candidates()
-    P->>D: users, user_profile, user_preferences
-    D-->>P: CV text, notes, preferences per user
-    P-->>R: one Candidate per complete profile
+    P->>D: who has a complete profile?
+    D-->>P: candidates (CV, notes, preferences)
 
-    rect rgb(245,245,245)
-    note over R,M: Profile digest — model call, once per user, only when the CV or notes changed
-    R->>P: load_digest(candidate)
-    P->>D: stored digest + its source hash
-    alt digest matches current CV + notes
-        D-->>P: ProfileDigest (no model call)
-    else CV or notes changed
-        P->>O: opencode run --agent job-analyst (prompt: CV text + notes)
-        O->>M: chat completion, write tool available
-        M-->>O: writes result.json
-        O-->>P: ProfileDigest (validated)
-        P->>D: save_digest(user, hash, digest)
-    end
+    opt CV or notes changed since last time
+        P->>O: distil this CV into a digest
+        O->>M: prompt + write tool
+        M-->>O: result.json
+        O-->>P: ProfileDigest
+        P->>D: store digest
     end
 
-    rect rgb(245,245,245)
-    note over R,D: Fetch and store — Python only, no model
-    R->>D: active_sources() = on, healthy, followed by someone
-    R->>F: fetch_all(sources)
-    par one thread per source
-        F->>B: GET board API / feed / rendered page
-        B-->>F: raw postings
-    end
-    F->>D: record_source_result(id, count, error)
-    F-->>R: RawJob list (~4000)
-    R->>R: prefilter: keyword gate from each user's digest (~2000 kept)
-    R->>F: store(kept)
-    F->>D: upsert_job by fingerprint(company, title, location)
-    F->>D: job_sources(job, source) for every board it was seen on
-    end
+    P->>B: fetch every followed source
+    B-->>P: ~4000 raw postings
+    P->>P: prefilter (keywords, no model)
+    P->>D: store ~2000 postings, deduplicated
 
-    loop for each Candidate
-        rect rgb(245,245,245)
-        note over T,M: Triage — batched, cheap
-        R->>T: run_triage(candidate)
-        T->>D: jobs_needing('triage', criteria) = visible, not dismissed, no score under this criteria hash
-        D-->>T: pending postings
+    loop for each candidate
+        P->>D: postings with no score under their criteria
+        D-->>P: pending
         loop batches of 12
-            T->>T: triage_prompt(candidate, 12 excerpts)
-            T->>O: opencode run --pure --agent job-analyst
-            O->>M: prompt: digest + notes + preferences + rejections + 12 postings
-            M-->>O: writes result.json {results:[{ref,score,verdict,reason}]}
-            O-->>T: TriageBatch (validated, refs checked)
-            T->>D: record_evaluation(job, user, 'triage', criteria, score)
+            P->>O: score these 12 for this candidate
+            O->>M: digest + notes + preferences + 12 excerpts
+            M-->>O: result.json (score, verdict, reason each)
+            O-->>P: validated batch
+            P->>D: one evaluation row per posting
         end
-        end
-
-        rect rgb(245,245,245)
-        note over T,M: Deep dive — one posting per call, expensive
-        R->>T: run_deepdive(candidate)
-        T->>D: deepdive_candidates(criteria, min 65, top 10)
-        D-->>T: best triaged postings without a deep dive
-        loop top N
-            T->>O: opencode run (prompt: context + full posting, 20K chars)
-            O->>M: eligibility, summary, salary, stack, concerns
-            M-->>O: writes result.json
-            O-->>T: DeepDive (validated)
-            T->>D: record_evaluation(job, user, 'deepdive', criteria, ...)
-        end
+        loop top 10 above 65
+            P->>O: deep dive on this one posting
+            O->>M: context + full posting
+            M-->>O: result.json (eligibility, summary, concerns)
+            O-->>P: validated deep dive
+            P->>D: evaluation row, stage deepdive
         end
     end
 
-    R->>D: finish_run(stats)
-    note over D: The web app reads jobs joined with the best evaluation under the current criteria hash
+    note over D: The web app reads each posting with its best evaluation
 ```
 
 </details>
