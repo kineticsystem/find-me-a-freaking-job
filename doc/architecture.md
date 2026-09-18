@@ -221,6 +221,10 @@ The model endpoint comes from `llm.base_url` in settings, overridable with `JOBF
 
 Before a run spends any inference the pipeline checks that the model server answers (`opencode.llm_reachable`). A 503 means llama.cpp is still loading the model, normal when both start together, and the run waits for it (`llm.startup_wait_seconds`). If the server is unreachable, the run still fetches and stores, skips the LLM stages, and is recorded as `partial`: a downed model costs seconds per run rather than a minute per session times every batch.
 
+## Security
+
+What a job posting's text can and cannot reach when the model reads it, and the token and password facts, are in [security.md](security.md).
+
 ## Working on the code
 
 The container is the only supported way to run it; nothing is installed on the host. The image bakes the code, so the loop is edit, `./docker/dock.sh <name> build`, `start`. The build reuses cached layers: a Python-only change does not rebuild the web app, and llama.cpp is never rebuilt by `build` once its binary exists.
