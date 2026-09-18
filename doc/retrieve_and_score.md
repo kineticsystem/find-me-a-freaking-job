@@ -1,6 +1,6 @@
 # How a posting is retrieved and scored
 
-A walk through one scan, from a job board to a score on a card, with the three parts kept apart: the Python pipeline that fetches and stores, the model that judges, and opencode, which sits between them. Read `Architecture.md` for the whole system; this is the one path, in order.
+A walk through one scan, from a job board to a score on a card, with the three parts kept apart: the Python pipeline that fetches and stores, the model that judges, and opencode, which sits between them. Read `architecture.md` for the whole system; this is the one path, in order.
 
 ## The short version
 

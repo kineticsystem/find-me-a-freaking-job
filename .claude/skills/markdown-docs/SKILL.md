@@ -19,7 +19,7 @@ The author reads these in VS Code, which soft-wraps. Hard wraps only make the fi
 Run the unwrap script on any .md file you touched. It joins wrapped paragraphs and list items and leaves code, tables and headings untouched:
 
 ```bash
-python3 .claude/skills/markdown-docs/scripts/unwrap.py README.md doc/Architecture.md
+python3 .claude/skills/markdown-docs/scripts/unwrap.py README.md doc/architecture.md
 ```
 
 Then check nothing prose-like still starts with whitespace outside a code block:

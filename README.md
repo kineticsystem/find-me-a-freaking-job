@@ -20,7 +20,7 @@ What you get:
 
 ## Architecture
 
-The architecture is described in [doc/Architecture.md](doc/Architecture.md).
+The architecture is described in [doc/architecture.md](doc/architecture.md).
 
 > [!CAUTION]
 > The entire project was "vibe coded" 🤡 — written by an AI assistant in conversation, with only the tech stack choices made by a human. Use it at your own risk.
