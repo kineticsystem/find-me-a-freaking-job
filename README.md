@@ -112,7 +112,7 @@ As shipped it runs Qwen 3.8 27B, which fits a 24 GB card.
 ./docker/dock.sh jobfinder run
 ```
 
-The first run does more than later ones: it distils your CV and notes into a profile (about 30 seconds), fetches from every source, scores everything it kept, and deep-dives the best. Expect it to take a while — the time is almost all model inference, so it scales with your model and GPU; subsequent runs only evaluate postings they have not seen. Follow it with `./docker/dock.sh jobfinder logs`.
+The first run does more than later ones: it distils your CV and notes into a profile (about 30 seconds), fetches from every source, scores everything it kept, and deep-dives the best. Expect it to take a while — the time is almost all model inference, so it scales with your model and GPU; subsequent runs only evaluate postings they have not seen. Follow it with `./docker/dock.sh jobfinder logs`. What each stage is doing, and where the model comes in, is walked through in [doc/retrieve_and_score.md](doc/retrieve_and_score.md).
 
 To see it fetch without spending any inference time:
 
