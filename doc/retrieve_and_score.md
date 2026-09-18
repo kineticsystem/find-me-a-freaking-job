@@ -4,9 +4,13 @@ A walk through one scan, from a job board to a score on a card, with the three p
 
 ## The short version
 
-The scan is deterministic Python except where the model is asked to *understand* something, and that happens in two different places. The first is retrieval, but only for sources that are prose rather than data: a company board has an API and is read without any model; a careers page with no board behind it, or the HN "Who is hiring" thread, is text, and the model is what turns that text into postings. The second is scoring: once a posting is in the database, the model is asked one question about it, how well it fits this candidate, and its answer is written back as a row. Reading and judging are separate calls with separate prompts; a posting the model extracted is stored like any other and scored later like any other.
+The scan is deterministic Python except where the model is asked to *understand* something, and that happens in two different places. 
 
-opencode is the way the model is called. The pipeline never speaks HTTP to llama.cpp for scoring; it writes a prompt, starts one `opencode run` process per judgement, and reads one JSON file back. opencode is the agent runtime that hands the prompt to the model, gives it a `write` tool, and stops when the model has written `result.json`.
+- The first is retrieval, but only for sources that are prose rather than data: a company board has an API and is read without any model; a careers page with no board behind it, or the HN "Who is hiring" thread, is text, and the model is what turns that text into postings. 
+  
+- The second is scoring: once a posting is in the database, the model is asked one question about it, how well it fits this candidate, and its answer is written back as a row. Reading and judging are separate calls with separate prompts; a posting the model extracted is stored like any other and scored later like any other.
+
+OpenCode is the way the model is called. The pipeline never speaks HTTP to llama.cpp for scoring; it writes a prompt, starts one `opencode run` process per judgement, and reads one JSON file back. opencode is the agent runtime that hands the prompt to the model, gives it a `write` tool, and stops when the model has written `result.json`.
 
 The database is the only state. A posting, a user's decisions on it and every score it has ever received live in SQLite; a run reads its work from there and writes its results there. The model has no memory between calls; the database is what makes the search incremental.
 

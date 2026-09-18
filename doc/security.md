@@ -1,6 +1,6 @@
 # Security notes
 
-What the system does and does not protect against, as it is today. Facts, not plans; when something is unverified it says so.
+What the system does and does not protect against, as it is today.
 
 ## Prompt injection through job postings
 
