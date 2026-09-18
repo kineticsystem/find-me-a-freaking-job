@@ -23,8 +23,11 @@ from .pipeline import run as run_mod
 
 log = logging.getLogger(__name__)
 
-STATUSES = ("new", "shortlisted", "applied", "dismissed", "archived")
-Status = Literal["new", "shortlisted", "applied", "dismissed", "archived"]
+# declined: applied, then turned down -- kept apart from dismissed (your
+# choice) and archived (no longer relevant) so the record of applications
+# that went nowhere is one filter away.
+STATUSES = ("new", "shortlisted", "applied", "declined", "dismissed", "archived")
+Status = Literal["new", "shortlisted", "applied", "declined", "dismissed", "archived"]
 
 
 @asynccontextmanager
@@ -190,7 +193,10 @@ def list_runs(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
 
 @admin_api.post("/runs")
 def trigger_run(admin: AdminUser) -> dict[str, Any]:
-    """A scan scores every user with a complete profile; it needs at least one."""
+    """A scan fetches everything and scores every unscored posting for
+    every user with a complete profile; it needs at least one. Hours on a
+    first run or after a CV change, minutes once caught up; Stop is
+    honoured in every stage."""
     from .pipeline import profile as prof
 
     if not prof.candidates():

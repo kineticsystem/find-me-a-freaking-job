@@ -64,3 +64,38 @@ def test_stop_endpoint(client, monkeypatch):
     assert client.post("/runs/stop").json() == {"ok": True, "stopping": True}
     assert client.get("/health").json()["progress"]["stopping"] is True
     progress.finish()
+
+
+def test_stop_during_fetch_cancels_the_queued_sources_and_keeps_what_arrived(tmp_db, monkeypatch, tmp_path):
+    """Fetching 60 boards takes minutes; Stop must not wait for all of them."""
+    import threading
+    from jobfinder import db
+    from jobfinder.models import RawJob
+    from jobfinder.pipeline import fetch
+
+    for i in range(6):
+        db.upsert_source({"id": f"s{i}", "type": "remoteok"}, origin="user", followers=[1])
+    first_done = threading.Event()
+    started: list[str] = []
+
+    class Slow:
+        def __init__(self, cfg): self.id = cfg["id"]
+        def fetch(self):
+            started.append(self.id)
+            if self.id == "s0":
+                return [RawJob(source_id="s0", company="C", title="T", location="", url="https://x/1", description="d" * 50)]
+            first_done.wait(5)          # the rest hang until the stop is in
+            return []
+    monkeypatch.setattr(fetch, "build", lambda cfg: Slow(cfg))
+    monkeypatch.setattr(fetch.settings().http, "max_concurrency", 2)
+    progress.begin(1)
+    try:
+        def stop_after_first():
+            while "s0" not in started: pass
+            progress.request_stop(); first_done.set()
+        threading.Thread(target=stop_after_first, daemon=True).start()
+        jobs, stats = fetch.fetch_all(tmp_path, None)
+        assert stats.get("cancelled", 0) >= 1 and len(started) < 6, (stats, started)
+        assert stats["raw"] == len(jobs)
+    finally:
+        progress.finish()

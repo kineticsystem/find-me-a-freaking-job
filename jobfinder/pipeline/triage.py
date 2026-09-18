@@ -34,10 +34,12 @@ def _row_to_entry(ref: int, row: Any) -> dict[str, Any]:
 
 
 def run_triage(cand: Candidate, workdir: Path, run_id: int) -> dict[str, Any]:
+    """Every posting this user can see that has no score under their
+    current criteria, in batches, newest first."""
     criteria = cand.criteria
     cfg = settings()
     batch_size = cfg.limits.triage_batch_size
-    pending = db.jobs_needing("triage", criteria, cfg.limits.max_jobs_per_run, user_id=cand.user_id)
+    pending = db.jobs_needing("triage", criteria, user_id=cand.user_id)
     stats: dict[str, Any] = {"triaged": 0, "batches": 0, "failed_batches": 0, "strong": 0}
     if not pending:
         return stats

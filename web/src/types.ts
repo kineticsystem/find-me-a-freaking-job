@@ -1,9 +1,9 @@
-export type Status = 'new' | 'shortlisted' | 'applied' | 'dismissed' | 'archived'
+export type Status = 'new' | 'shortlisted' | 'applied' | 'declined' | 'dismissed' | 'archived'
 export type RemoteType = 'remote' | 'hybrid' | 'onsite' | 'unknown'
 export type Verdict = 'strong' | 'maybe' | 'reject'
 export type Sort = 'score' | 'newest' | 'company'
 
-export const STATUSES: Status[] = ['new', 'shortlisted', 'applied', 'dismissed', 'archived']
+export const STATUSES: Status[] = ['new', 'shortlisted', 'applied', 'declined', 'dismissed', 'archived']
 // Offered as chips when dismissing a job. Free text is also accepted; these
 // are just the objections that come up most often.
 export const DISMISS_REASONS = [

@@ -31,9 +31,20 @@ def fetch_all(workdir: Path, digest: ProfileDigest | None) -> tuple[list[RawJob]
         except Exception as exc:  # one bad board must not kill the run
             return scfg["id"], [], f"{type(exc).__name__}: {exc}"
 
-    with ThreadPoolExecutor(max_workers=cfg.http.max_concurrency) as pool:
+    from . import progress
+
+    # Stop is honoured here too: sources still queued are cancelled, the
+    # ones in flight finish (a request cannot be interrupted), and what has
+    # been fetched so far is returned to be stored.
+    pool = ThreadPoolExecutor(max_workers=cfg.http.max_concurrency)
+    try:
         futures = [pool.submit(_run, s) for s in sources]
         for fut in as_completed(futures):
+            if progress.stop_requested():
+                cancelled = sum(f.cancel() for f in futures)
+                stats["cancelled"] = cancelled
+                log.info("stop requested during fetch: %d sources not fetched", cancelled)
+                break
             source_id, found, error = fut.result()
             stats["sources_run"] += 1
             stats["per_source"][source_id] = len(found) if not error else error
@@ -43,6 +54,8 @@ def fetch_all(workdir: Path, digest: ProfileDigest | None) -> tuple[list[RawJob]
             else:
                 jobs.extend(found)
             db.record_source_result(source_id, len(found), error)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
     stats["raw"] = len(jobs)
     return jobs, stats
@@ -72,13 +85,16 @@ def normalize(job: RawJob) -> NormalizedJob:
     )
 
 
-def store(jobs: list[RawJob], limit: int) -> dict[str, Any]:
-    """Normalise, dedupe and persist. Returns counts."""
+def store(jobs: list[RawJob]) -> dict[str, Any]:
+    """Normalise, dedupe and persist everything that passed the prefilter.
+    Never truncated: a cap here once silently dropped whichever sources the
+    fetch threads finished last -- the same ones every run -- so a newly
+    added board could be fetched forever and never stored."""
     new_ids: list[int] = []
     seen: dict[str, int] = {}          # fingerprint -> job id, within this batch
     stored = 0
     with db.connect() as conn:
-        for raw in jobs[:limit]:
+        for raw in jobs:
             job = normalize(raw)
             if not job.title:
                 continue

@@ -81,7 +81,7 @@ def test_the_same_posting_from_two_boards_is_one_job_seen_by_both_sides(two):
     db.upsert_source({"id": "gh-acme", "type": "greenhouse", "slug": "acme"}, origin="user", followers=[two])
     raw = [RawJob(source_id="seed-board", company="Acme", title="Engineer", location="Remote", url="https://a/1", description="x" * 50),
            RawJob(source_id="gh-acme", company="Acme", title="Engineer", location="Remote", url="https://a/2", description="x" * 50)]
-    out = fetch.store(raw, 100)
+    out = fetch.store(raw)
     assert out["stored"] == 1 and out["new"] == 1
     with db.connect() as conn:
         assert sorted(r["source_id"] for r in conn.execute("SELECT source_id FROM job_sources")) == ["gh-acme", "seed-board"]
@@ -140,3 +140,15 @@ def test_old_database_every_user_follows_every_source(tmp_path, monkeypatch):
     assert {s["id"]: s["following"] for s in db.list_sources(1)} == {"on": 1, "off": 0}
     with db.connect() as conn:
         assert conn.execute("SELECT source_id FROM job_sources").fetchall()[0][0] == "on"
+
+
+def test_store_keeps_every_posting(tmp_db):
+    """A newly added board fetched after the big ones used to be truncated away every run."""
+    from jobfinder.pipeline import fetch
+
+    raw = [RawJob(source_id="big-board", company="Big", title=f"Role {i}", location="Remote", url=f"https://b/{i}", description="x" * 50) for i in range(20)]
+    raw.append(RawJob(source_id="wd-nvidia", company="NVIDIA", title="GPU Engineer", location="Remote", url="https://n/1", description="x" * 50))
+    out = fetch.store(raw)
+    assert out["stored"] == 21 and out["new"] == 21
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job_sources WHERE source_id = 'wd-nvidia'").fetchone()[0] == 1

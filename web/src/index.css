@@ -107,6 +107,8 @@ a { color: var(--accent); }
 .btn-primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
 .btn-primary:hover { filter: brightness(1.08); background: var(--accent); }
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.btn-declined { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); font-weight: 600; }
+.btn-declined:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .btn-sm { padding: 5px 9px; font-size: 13px; }
 
 /* ---------- job list ---------- */
@@ -145,6 +147,8 @@ a { color: var(--accent); }
 .chip[data-kind="status"] { border: 1px solid var(--border); background: transparent; text-transform: capitalize; }
 .chip[data-kind="status"][data-value="shortlisted"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .chip[data-kind="status"][data-value="applied"] { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent); font-weight: 600; }
+.chip[data-kind="status"][data-value="declined"] { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.job.is-declined { opacity: 0.75; }
 .chip[data-kind="warn"] { color: var(--danger); }
 .chip-btn { cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
 .chip-btn:hover { background: var(--surface-2); }

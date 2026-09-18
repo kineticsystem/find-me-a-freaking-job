@@ -35,7 +35,11 @@ def _new_workdir() -> Path:
 
 
 def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
-    """Execute one full pipeline. Returns the stats dict recorded on the run."""
+    """Execute one full pipeline. Returns the stats dict recorded on the run.
+    Nothing is capped: every followed source is fetched, everything that
+    passes the prefilter is stored, every unscored posting is scored for
+    every user. A first run is hours; Stop ends it at the next unit and
+    keeps what was done."""
     if not _run_lock.acquire(blocking=False):
         log.warning("a run is already in progress; skipping this tick")
         return {"skipped": "already running"}
@@ -95,15 +99,17 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
         stats.update(fetch_stats)
         progress.note(fetched=len(raw), sources=fetch_stats.get("sources_run", 0))
 
-        if with_digest and settings().discovery.enabled:
+        if with_digest and settings().discovery.enabled and not progress.stop_requested():
             for cand in with_digest:
+                if progress.stop_requested():
+                    break
                 raw += _fetch_keyword_sources(cand, workdir, stats)
 
         # -- discovery channel A: harvest boards out of what we fetched --
         stats["harvested_sources"] = discovery.harvest(raw)
 
         # -- structure the prose sources ---------------------------------
-        if not skip_llm:
+        if not skip_llm and not progress.stop_requested():
             progress.stage("extract", "structuring free-text adverts")
             structured = extract.extract(raw, workdir)
             raw = [j for j in raw if not j.needs_extraction] + structured
@@ -119,12 +125,12 @@ def run_once(*, skip_llm: bool = False) -> dict[str, Any]:
 
         # -- persist ------------------------------------------------------
         progress.stage("store", "storing new postings")
-        store_stats = fetch.store(kept, settings().limits.max_jobs_per_run)
+        store_stats = fetch.store(kept)
         store_stats.pop("new_ids", None)
         stats.update(store_stats)
 
         # -- reasoning, per user ------------------------------------------
-        if not skip_llm:
+        if not skip_llm and not progress.stop_requested():
             for cand in with_digest:
                 if progress.stop_requested():
                     break

@@ -110,7 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_criteria ON evaluations(criteria_hash);
 CREATE TABLE IF NOT EXISTS user_state (
     job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     user_id    INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
-    status     TEXT NOT NULL DEFAULT 'new',   -- new|shortlisted|applied|dismissed|archived
+    status     TEXT NOT NULL DEFAULT 'new',   -- new|shortlisted|applied|declined|dismissed|archived
     notes      TEXT,
     reason     TEXT,                          -- why it was dismissed; fed back into scoring
     updated_at TEXT NOT NULL,
@@ -547,8 +547,9 @@ def add_job_source(conn: sqlite3.Connection, job_id: int, source_id: str, when: 
                  (job_id, source_id, when or utcnow()))
 
 
-def jobs_needing(stage: str, criteria_hash: str, limit: int, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
-    """Jobs with no evaluation for this user and stage under the current criteria."""
+def jobs_needing(stage: str, criteria_hash: str, limit: int = -1, user_id: int = DEFAULT_USER_ID) -> list[sqlite3.Row]:
+    """Jobs with no evaluation for this user and stage under the current
+    criteria; all of them unless a limit is given (-1 is SQLite's "none")."""
     with connect() as conn:
         return conn.execute(
             f"""SELECT j.* FROM jobs j
@@ -628,7 +629,7 @@ def list_jobs(
     """Jobs joined with their best current evaluation. Returns (page, total).
 
     `status=None` means the active statuses -- new, shortlisted, applied.
-    `hidden=True` flips that: only archived and dismissed. Pass an explicit
+    `hidden=True` flips that: only archived, dismissed and declined. Pass an explicit
     status to see exactly that one.
     """
     from .pipeline.criteria import current_criteria_hash
@@ -672,9 +673,9 @@ def list_jobs(
         sql += " AND COALESCE(u.status,'new') = ?"
         params.append(status)
     elif hidden:
-        sql += " AND COALESCE(u.status,'new') IN ('archived', 'dismissed')"
+        sql += " AND COALESCE(u.status,'new') IN ('archived', 'dismissed', 'declined')"
     else:
-        sql += " AND COALESCE(u.status,'new') NOT IN ('archived', 'dismissed')"
+        sql += " AND COALESCE(u.status,'new') NOT IN ('archived', 'dismissed', 'declined')"
     if source:
         sql += " AND EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id = j.id AND js.source_id = ?)"
         params.append(source)
@@ -1128,6 +1129,7 @@ def stats(user_id: int = DEFAULT_USER_ID) -> dict[str, Any]:
             "evaluated": q("SELECT COUNT(DISTINCT job_id) FROM evaluations WHERE user_id = ?", user_id),
             "shortlisted": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='shortlisted'", user_id),
             "applied": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='applied'", user_id),
+            "declined": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='declined'", user_id),
             "dismissed": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='dismissed'", user_id),
             "archived": q("SELECT COUNT(*) FROM user_state WHERE user_id = ? AND status='archived'", user_id),
             "sources": q("SELECT COUNT(*) FROM user_sources us JOIN sources s ON s.id = us.source_id WHERE us.user_id = ? AND us.enabled = 1 AND s.enabled = 1", user_id),

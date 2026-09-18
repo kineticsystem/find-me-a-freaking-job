@@ -66,3 +66,4 @@ def test_run_scores_each_ready_user_and_fetches_once(tmp_db, monkeypatch, tmp_pa
     assert scored[0][2] != scored[2][2]                                # each under their own criteria
     assert stats["triaged"] == 2 and set(stats["users"]) == {1, b}
     assert (tmp_path / "digest.md").read_text().count("# ") >= 3        # a section per user
+

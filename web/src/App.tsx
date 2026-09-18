@@ -159,7 +159,7 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
   const onRunNow = async () => {
     try {
       await api.triggerRun()
-      notify('Run queued — results will appear as it progresses')
+      notify('Scan queued — results will appear as it progresses')
       setTimeout(refreshMeta, 1500)
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Could not start a run', true)
@@ -224,7 +224,7 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
           {health?.setup && health.stale_scores != null && health.stale_scores > 0 && (
             <span title="Faded scores are from before your last CV, notes or preferences change">
               {health.stale_scores} score{health.stale_scores === 1 ? '' : 's'} from before your last change
-              {health.running ? ' · re-scoring now' : user.is_admin && <> · <button className="linkish" onClick={onRunNow} disabled={!health.setup?.ready}>re-score now</button></>}
+              {health.running ? ' · re-scoring now' : ' · re-scored on the next scan'}
             </span>
           )}
           <span className="spacer" style={{ flex: 1 }} />
@@ -243,7 +243,8 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
               </button>
             ) : <span className="btn-note">a scan is running</span>
           ) : (
-            user.is_admin && <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health?.setup?.ready}>▶ Scan now</button>
+            user.is_admin && <button className="btn btn-primary btn-scan" onClick={onRunNow} disabled={!health?.setup?.ready}
+                                     title="Fetch every source, then score every posting that has no score yet — hours the first time, minutes once caught up">▶ Scan now</button>
           )}
           {user.is_admin && health?.setup && !health.running && !health.setup.ready && <span className="btn-note">complete your settings first</span>}
         </div>

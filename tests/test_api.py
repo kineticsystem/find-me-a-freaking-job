@@ -573,3 +573,16 @@ def test_add_source_with_an_unreachable_host_is_a_clear_refusal(client, tmp_db, 
     r = client.post("/sources", json={"url": "https://careers.zzqx-nonexistent-domain.invalid/jobs"})
     assert r.status_code == 400, r.text
     assert "nothing to read" in r.json()["detail"] or "Could not reach" in r.json()["detail"]
+
+
+def test_declined_is_kept_apart_and_hidden_by_default(client, seeded):
+    a = seeded["a"]
+    client.patch(f"/jobs/{a}/state", json={"status": "applied"})
+    assert client.patch(f"/jobs/{a}/state", json={"status": "declined"}).status_code == 200
+    assert client.get(f"/jobs/{a}").json()["status"] == "declined"
+    assert a not in [j["id"] for j in client.get("/jobs").json()["jobs"]]                          # out of the active list
+    assert a in [j["id"] for j in client.get("/jobs", params={"hidden": "true"}).json()["jobs"]]   # with the archived and dismissed
+    assert [j["id"] for j in client.get("/jobs", params={"status": "declined"}).json()["jobs"]] == [a]
+    assert client.get("/jobs/facets").json()["status"]["declined"] == 1
+    assert client.get("/health").json()["stats"]["declined"] == 1
+    assert client.get("/rejections").json()["rejections"] == []                                     # not a taste signal

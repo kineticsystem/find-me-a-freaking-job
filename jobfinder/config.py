@@ -63,7 +63,6 @@ class OpencodeSettings(BaseModel):
 
 class Limits(BaseModel):
     triage_batch_size: int = 12
-    max_jobs_per_run: int = 300
     deepdive_top_n: int = 10
     deepdive_min_score: int = 65
     posting_chars: int = 20000

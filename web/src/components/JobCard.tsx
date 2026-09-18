@@ -33,6 +33,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
   const salary = job.salary || job.salary_raw
   const archived = job.status === 'archived'
   const dismissed = job.status === 'dismissed'
+  const declined = job.status === 'declined'
 
   const reason = [...picked, freeText.trim()].filter(Boolean).join(', ')
   const submitDismiss = () => {
@@ -43,7 +44,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
   const toggle = (r: string) => setPicked((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]))
 
   return (
-    <article className={`job${archived ? ' is-archived' : ''}${dismissed ? ' is-dismissed' : ''}${job.status === 'applied' ? ' is-applied' : ''}`} data-id={job.id} aria-busy={busy}>
+    <article className={`job${archived ? ' is-archived' : ''}${dismissed ? ' is-dismissed' : ''}${job.status === 'applied' ? ' is-applied' : ''}${declined ? ' is-declined' : ''}`} data-id={job.id} aria-busy={busy}>
       <div className="job-head">
         <div className={`score${job.score_stale ? ' stale' : ''}`} data-band={band(job.score)}
              title={job.score_stale ? 'Scored before your last CV or preferences change — re-scored on the next scan' : (job.verdict ?? 'not yet evaluated')}>
@@ -111,10 +112,16 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
         {job.status === 'shortlisted' && (
           <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => onStatus(job, 'applied')}>✓ Applied</button>
         )}
-        {!archived && !dismissed && (
+        {job.status === 'applied' && (
+          <button className="btn btn-sm btn-declined" disabled={busy} onClick={() => onStatus(job, 'declined')} title="They said no: kept in your record of applications, out of the active list">Declined</button>
+        )}
+        {declined && (
+          <button className="btn btn-sm" disabled={busy} onClick={() => onStatus(job, 'applied')}>Back to applied</button>
+        )}
+        {!archived && !dismissed && !declined && (
           <button className="btn btn-sm" disabled={busy} onClick={() => setDismissing(true)}>✕ Not for me</button>
         )}
-        {!archived && !dismissed && (
+        {!archived && !dismissed && !declined && (
           <button className="btn btn-sm" disabled={busy} onClick={() => onStatus(job, 'archived')}>Archive</button>
         )}
         {archived && (
@@ -123,7 +130,7 @@ export function JobCard({ job, busy, onStatus, onDelete }: Props) {
         {dismissed && (
           <button className="btn btn-sm" disabled={busy} onClick={() => onStatus(job, 'new')}>Restore</button>
         )}
-        {job.status !== 'new' && !archived && !dismissed && (
+        {job.status !== 'new' && !archived && !dismissed && !declined && (
           <button className="btn btn-sm" disabled={busy} onClick={() => onStatus(job, 'new')}>Reset</button>
         )}
         {confirming ? (

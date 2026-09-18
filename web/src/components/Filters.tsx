@@ -63,7 +63,7 @@ export function Filters({ query, facets, open, onChange, onReset }: Props) {
       {!query.status && (
         <label>
           <input type="checkbox" checked={query.hidden} onChange={(e) => onChange({ hidden: e.target.checked })} />
-          Show only archived and dismissed
+          Show only archived, dismissed and declined
         </label>
       )}
       <span className="spacer" />

@@ -25,7 +25,6 @@ opencode:
 
 limits:
   triage_batch_size: 12       # jobs per triage session
-  max_jobs_per_run: 300       # cap on newly fetched postings per run
   deepdive_top_n: 10
   deepdive_min_score: 65
   posting_chars: 20000        # truncation for a single posting fed to the model
