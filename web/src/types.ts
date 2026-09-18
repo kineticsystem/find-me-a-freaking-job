@@ -133,12 +133,26 @@ export interface Settings {
   running: boolean
 }
 
+/** The model's distillation of the CV and notes; what every judgement is given. */
+export interface Digest {
+  headline: string
+  years_experience: string
+  seniority: string
+  core_skills: string[]
+  secondary_skills: string[]
+  domains: string[]
+  recent_roles: string[]
+  languages: string[]
+  summary: string
+  search_keywords: string[]
+}
+
 export interface Profile {
   cv: { name: string; bytes: number; modified: string } | null
   cv_files: string[]
   cv_chars: number
   notes: string
-  digest: { headline: string; summary: string } | null
+  digest: Digest | null
   digest_current: boolean
 }
 

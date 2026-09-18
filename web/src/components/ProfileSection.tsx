@@ -14,6 +14,7 @@ export function ProfileSection({ notify, onChanged }: Props) {
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [showDigest, setShowDigest] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const load = () =>
@@ -76,7 +77,23 @@ export function ProfileSection({ notify, onChanged }: Props) {
       </div>
 
       {profile?.digest && (
-        <div className="settings-hint">How the model currently sees you: <em>{profile.digest.headline}</em>{profile.digest_current ? '' : ' (will be rebuilt on the next scan)'}</div>
+        <div className="settings-hint">
+          How the model currently sees you: <em>{profile.digest.headline}</em>{profile.digest_current ? '' : ' (will be rebuilt on the next scan)'}
+          {' · '}<button className="linkish" onClick={() => setShowDigest((v) => !v)} aria-expanded={showDigest}>{showDigest ? 'hide the digest' : 'show the digest'}</button>
+        </div>
+      )}
+      {profile?.digest && showDigest && (
+        <dl className="digest" aria-label="Profile digest">
+          <div className="settings-hint">This is the distillation of your CV and notes that goes into every judgement, in place of the CV itself. If something here is wrong, the scores will be too: fix the CV or say it in the notes, and it is rebuilt on the next scan.</div>
+          <dt>Summary</dt><dd>{profile.digest.summary}</dd>
+          <dt>Seniority</dt><dd>{profile.digest.seniority || '—'}{profile.digest.years_experience ? ` · ${profile.digest.years_experience}` : ''}</dd>
+          <dt>Core skills</dt><dd>{profile.digest.core_skills.join(', ')}</dd>
+          <dt>Secondary skills</dt><dd>{profile.digest.secondary_skills.join(', ') || '—'}</dd>
+          <dt>Domains</dt><dd>{profile.digest.domains.join(', ') || '—'}</dd>
+          <dt>Recent roles</dt><dd>{profile.digest.recent_roles.join(' · ') || '—'}</dd>
+          <dt>Languages</dt><dd>{profile.digest.languages.join(', ') || '—'}</dd>
+          <dt>Search keywords</dt><dd>{profile.digest.search_keywords.join(', ')}<span className="settings-hint"> — these also drive the keyword searches in your source list</span></dd>
+        </dl>
       )}
 
       <label className="settings-label" htmlFor="notes">Your notes — what you want, in your own words</label>

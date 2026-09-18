@@ -107,6 +107,11 @@ a { color: var(--accent); }
 .btn-primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
 .btn-primary:hover { filter: brightness(1.08); background: var(--accent); }
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.digest { margin: 4px 0 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 13px; display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-self: stretch; }
+.digest > .settings-hint { grid-column: 1 / -1; }
+.digest dt { color: var(--muted); font-weight: 600; }
+.digest dd { margin: 0; }
+@media (max-width: 640px) { .digest { grid-template-columns: 1fr; } .digest dt { margin-top: 4px; } }
 .btn-declined { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); font-weight: 600; }
 .btn-declined:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .btn-sm { padding: 5px 9px; font-size: 13px; }
