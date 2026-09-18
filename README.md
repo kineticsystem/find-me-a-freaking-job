@@ -23,7 +23,7 @@ What you get:
 The architecture is described in [doc/architecture.md](doc/architecture.md).
 
 > [!CAUTION]
-> The entire project was "vibe coded" 🤡 — written by an AI assistant in conversation, with only the tech stack choices made by a human. Use it at your own risk.
+> The entire project was "vibe coded" 🤡 — written by an AI assistant in conversation, with only the tech stack choices made by a human. Use it at your own risk. What a job posting's text can and cannot reach when the model reads it is recorded in [doc/security.md](doc/security.md).
 
 ## What you need
 
