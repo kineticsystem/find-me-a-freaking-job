@@ -84,16 +84,16 @@ To follow a specific company, open the web app, ⚙ → *Where it looks*, and pa
 
 ### The model — `config/settings.yaml`
 
-The model server's exact command line — which model, context size, cache types — is `bin/llama-server.sh`; edit it to change the model. The `llm` section of `config/settings.yaml` (created from `settings.example.yaml` on first start) has to agree with it:
+Two models ship, each with its own launch script in `bin/`: `llama-ornith-1.5-35B-A3B.sh` (NVIDIA Ornith-1.5-35B-A3B, a mixture of experts, the default) and `llama-qwen-3.8-27B.sh` (Qwen3.8-27B). `doc/score_comparison.md` compares them on the same postings: Ornith ranks them the same way, about 1.5× faster, and on a scale that lets the best reach the deep dive, which Qwen's never did. Which one runs is decided by `llm.model` in `config/settings.yaml` (created from `settings.example.yaml` on first start): `bin/llama-server.sh` starts the script whose `--alias` matches it, so switching is one line and a restart.
 
 ```yaml
 llm:
   base_url: http://127.0.0.1:8084/v1
-  model: Qwen3.8-27B            # the --alias in bin/llama-server.sh
-  context_tokens: 120000        # what the server's slot holds (check /slots)
+  model: Ornith-1.5-35B         # or Qwen3.8-27B: the --alias of a bin/llama-*.sh
+  context_tokens: 80128         # what the server's slot holds (check /slots)
 ```
 
-As shipped it runs Qwen 3.8 27B, which fits a 24 GB card.
+As shipped it runs Ornith. To add a model, copy one of the scripts, change the repo and the `--alias`, and name the alias in `llm.model`. Both shipped models fit a 24 GB card. Scores are tied to the model that made them: after a switch every posting is re-scored on the next scan, with the old scores shown faded until then.
 
 ## 3. Start it and check the wiring
 

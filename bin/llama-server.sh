@@ -1,41 +1,38 @@
 #!/bin/bash -e
-# Start the model server. This is the qwen3.8-27B.sh from the llama.cpp fork,
-# with paths that make sense inside the container: logs under ./runs/llama,
-# the model from the mounted Hugging Face cache (no re-download).
+# Start the model server for the model named in config/settings.yaml.
 #
-#   LLAMA_HOST  default 0.0.0.0 (host networking: reachable as the host's :8084)
-#   LLAMA_PORT  default 8084
+# One script per model lives beside this one, bin/llama-<model>.sh, each with
+# its own --alias. This picks the script whose alias equals llm.model and
+# execs it, so the setting is the only place the choice is made: change
+# llm.model, restart, and the matching server comes up. LLAMA_SCRIPT=<path>
+# overrides the lookup.
 
 cd "$(dirname "$(readlink -f "$0")")/.."
-mkdir -p runs/llama/prompts
 
-exec ./modules/llama.cpp/build/bin/llama-server \
-  --hf-repo unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL \
-  --jinja \
-  --chat-template-kwargs '{"reasoning_effort":"medium"}' \
-  --alias "Qwen3.8-27B" \
-  --n-gpu-layers 999 \
-  --ctx-size 128000 \
-  --cache-type-k q8_0 \
-  --cache-type-v turbo4 \
-  --host "${LLAMA_HOST:-0.0.0.0}" \
-  --port "${LLAMA_PORT:-8084}" \
-  --reasoning-budget -1 \
-  --temp 0.6 \
-  --top-p 0.95 \
-  --top-k 20 \
-  --min-p 0.0 \
-  --presence-penalty 0.0 \
-  --repeat-penalty 1.0 \
-  --flash-attn on \
-  --parallel 1 \
-  --spec-type draft-mtp \
-  --spec-draft-n-max 2 \
-  -lv 4 \
-  --log-prompts-dir runs/llama/prompts \
-  --log-file runs/llama/server.log \
-  --no-mmproj-offload
+if [ -n "$LLAMA_SCRIPT" ]; then
+    exec "$LLAMA_SCRIPT"
+fi
 
-# Context using turbo 8, 110080
-# Context using turbo4, 128000
-# Context using turbo4, and offload vision model, 155000
+model=$(python - <<'PY'
+import yaml, pathlib
+cfg = yaml.safe_load(pathlib.Path("config/settings.yaml").read_text()) or {}
+print((cfg.get("llm") or {}).get("model") or "")
+PY
+)
+if [ -z "$model" ]; then
+    echo "llama-server.sh: llm.model is not set in config/settings.yaml" >&2
+    exit 2
+fi
+
+for script in bin/llama-*.sh; do
+    [ "$script" = "bin/llama-server.sh" ] && continue
+    alias=$(grep -oE -- '--alias "[^"]+"' "$script" | head -1 | sed 's/--alias "//; s/"$//')
+    if [ "$alias" = "$model" ]; then
+        echo "llama-server.sh: llm.model is $model; starting $script"
+        exec "$script"
+    fi
+done
+
+echo "llama-server.sh: no bin/llama-*.sh declares --alias \"$model\" (config/settings.yaml llm.model)." >&2
+echo "  available: $(grep -ohE -- '--alias "[^"]+"' bin/llama-*.sh | sed 's/--alias //' | tr '\n' ' ')" >&2
+exit 2

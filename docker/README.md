@@ -74,7 +74,9 @@ The container restarts itself after a reboot or a crash (`restart: unless-stoppe
 
 ```bash
 start.sh                 # what the container runs: llama-server, then the app
-llama-server.sh          # the model server alone (the fork's qwen3.8-27B.sh, container paths)
+llama-server.sh          # the model server alone: starts the bin/llama-<model>.sh whose --alias is llm.model
+llama-qwen-3.8-27B.sh    # Qwen3.8-27B command line (the fork's qwen3.8-27B.sh, container paths)
+llama-ornith-1.5-35B-A3B.sh  # NVIDIA Ornith-1.5-35B-A3B command line
 serve.sh                 # the app alone
 build-llama.sh           # compile the fork into modules/llama.cpp/build
 run-once.sh [--no-llm]   # one search run
@@ -84,7 +86,7 @@ test.sh                  # the API contract tests
 
 ## The model
 
-`bin/llama-server.sh` holds the exact `llama-server` command line — model, context size, KV cache types, sampling. Edit it to change the model or its settings, then `stop` and `start` — `bin/` is bind-mounted, so no rebuild is needed. The model name it serves (`--alias`) must match `llm.model` in `config/settings.yaml`.
+Each `bin/llama-<model>.sh` holds one exact `llama-server` command line — model, context size, KV cache types, sampling — and `bin/llama-server.sh` starts the one whose `--alias` equals `llm.model` in `config/settings.yaml`. To switch models change that line, then `stop` and `start`; to tune a model edit its script — `bin/` is bind-mounted, so no rebuild is needed.
 
 The llama.cpp fork is pinned by the submodule to a specific commit. To move it: `cd modules/llama.cpp && git checkout <commit>`, then `./docker/dock.sh jobfinder build-llama`.
 

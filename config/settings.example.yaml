@@ -9,8 +9,8 @@ run_on_start: true    # fire one run immediately when `serve` starts
 # model runs in another container.
 llm:
   base_url: http://127.0.0.1:8084/v1
-  model: Qwen3.8-27B            # the name llama.cpp serves it under (--alias)
-  context_tokens: 120000        # what the server's slot holds (check /slots)
+  model: Ornith-1.5-35B         # the --alias of a bin/llama-*.sh: Ornith-1.5-35B or Qwen3.8-27B
+  context_tokens: 80128         # what the server's slot holds (check /slots); Qwen3.8-27B is served with 128000
   output_tokens: 8192
   startup_wait_seconds: 300     # wait this long for a model that is still loading
 
