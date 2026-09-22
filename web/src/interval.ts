@@ -8,6 +8,16 @@ export function split(minutes: number): { n: number; unit: Unit } {
   return { n: minutes, unit: 'minutes' }
 }
 
+/** A duration in seconds as people say it: "48 s", "2 min", "1 h 52 min". */
+export function duration(seconds: number): string {
+  const s = Math.round(seconds)
+  if (s < 60) return `${s} s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60); const r = m % 60
+  return r ? `${h} h ${r} min` : `${h} h`
+}
+
 export function describe(minutes: number): string {
   const { n, unit } = split(minutes)
   return `${n} ${n === 1 ? unit.slice(0, -1) : unit}`

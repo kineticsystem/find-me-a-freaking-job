@@ -856,6 +856,24 @@ def finish_run(run_id: int, status: str, stats: dict[str, Any], error: str = "")
         )
 
 
+def last_finished_run() -> dict[str, Any] | None:
+    """The most recent run that ended (any status), with its duration: what
+    the UI shows as "last scan took ...". A run still going is not it."""
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT id, started_at, finished_at, status, stats FROM runs
+               WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+    if not row:
+        return None
+    stats = json.loads(row["stats"]) if row["stats"] else {}
+    return {
+        "id": row["id"], "started_at": row["started_at"], "finished_at": row["finished_at"], "status": row["status"],
+        "duration_seconds": stats.get("duration_seconds"),
+        "triaged": stats.get("triaged", 0), "deepdived": stats.get("deepdived", 0), "new": stats.get("new", 0),
+    }
+
+
 def list_runs(limit: int = 20) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(

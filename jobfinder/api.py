@@ -87,6 +87,7 @@ def health(request: Request) -> dict[str, Any]:
         "running": run_mod.is_running(),
         "progress": progress.snapshot(),
         "next_run": scheduler.next_run(),
+        "last_run": db.last_finished_run(),
         "interval_minutes": settings().interval_minutes,
         "opencode": opencode.health_check(),
         "setup": None, "stale_scores": None, "criteria": None, "stats": None,

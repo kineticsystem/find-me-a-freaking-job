@@ -4,7 +4,7 @@ import { Filters } from './components/Filters'
 import { JobCard } from './components/JobCard'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Login } from './components/Login'
-import { describe } from './interval'
+import { describe, duration } from './interval'
 import { ScanProgress } from './components/ScanProgress'
 import type { Facets, Health, Job, JobQuery, Status, User } from './types'
 import { DEFAULT_QUERY } from './types'
@@ -219,6 +219,11 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
           {health && (
             <span>
               {(health.running ? '● scan in progress' : nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') + ` · every ${describe(health.interval_minutes)}`}
+              {health.last_run?.duration_seconds != null && (
+                <span className="last-run" title={`Scan #${health.last_run.id}, ${health.last_run.status}: ${health.last_run.new} new postings, ${health.last_run.triaged} scored, ${health.last_run.deepdived} deep dives, finished ${new Date(health.last_run.finished_at).toLocaleString()}`}>
+                  {` · last scan took ${duration(health.last_run.duration_seconds)}`}{health.last_run.status !== 'ok' ? ` (${health.last_run.status})` : ''}
+                </span>
+              )}
             </span>
           )}
           {health?.setup && health.stale_scores != null && health.stale_scores > 0 && (

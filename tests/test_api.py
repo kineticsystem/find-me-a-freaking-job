@@ -586,3 +586,14 @@ def test_declined_is_kept_apart_and_hidden_by_default(client, seeded):
     assert client.get("/jobs/facets").json()["status"]["declined"] == 1
     assert client.get("/health").json()["stats"]["declined"] == 1
     assert client.get("/rejections").json()["rejections"] == []                                     # not a taste signal
+
+
+def test_health_reports_how_long_the_last_scan_took(client):
+    from jobfinder import db
+    assert client.get("/health").json()["last_run"] is None
+    rid = db.start_run()
+    assert client.get("/health").json()["last_run"] is None            # still running: not the last finished one
+    db.finish_run(rid, "ok", {"duration_seconds": 6712.4, "triaged": 300, "deepdived": 7, "new": 42})
+    last = client.get("/health").json()["last_run"]
+    assert last["id"] == rid and last["status"] == "ok" and last["duration_seconds"] == 6712.4
+    assert last["triaged"] == 300 and last["deepdived"] == 7 and last["new"] == 42

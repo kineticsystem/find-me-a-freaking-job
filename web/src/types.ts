@@ -102,6 +102,8 @@ export interface Health {
   setup: { cv: boolean; notes: boolean; preferences: boolean; ready: boolean } | null
   running: boolean
   next_run: string | null
+  /** The most recent finished scan: when, how long, what it did. */
+  last_run: { id: number; started_at: string; finished_at: string; status: string; duration_seconds: number | null; triaged: number; deepdived: number; new: number } | null
   interval_minutes: number
   stats: Record<string, number> | null
 }
