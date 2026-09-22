@@ -218,7 +218,7 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
           <span>{loading && jobs.length === 0 ? 'Loading…' : `${total} job${total === 1 ? '' : 's'}`}</span>
           {health && (
             <span>
-              {(health.running ? '● scan in progress' : nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') + ` · every ${describe(health.interval_minutes)}`}
+              {(!health.running && nextRun ? `next scan ${nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ` : '') + `every ${describe(health.interval_minutes)}`}
               {health.last_run?.duration_seconds != null && (
                 <span className="last-run" title={`Scan #${health.last_run.id}, ${health.last_run.status}: ${health.last_run.new} new postings, ${health.last_run.triaged} scored, ${health.last_run.deepdived} deep dives, finished ${new Date(health.last_run.finished_at).toLocaleString()}`}>
                   {` · last scan took ${duration(health.last_run.duration_seconds)}`}{health.last_run.status !== 'ok' ? ` (${health.last_run.status})` : ''}
