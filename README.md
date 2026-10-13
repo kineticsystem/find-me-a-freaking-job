@@ -1,33 +1,33 @@
 <p align="center"><img src="doc/tagline.png" alt="Find Me a Freaking Job" width="600"></p>
 
+> [!IMPORTANT]
+> This application is entirely AI-generated. I created it as an experiment: an AI coding assistant wrote all of it, the code, the tests and the documentation, in conversation with me, and the only choices I made were those of the tech stack. Use it at your own risk. What a job posting's text can and cannot reach when the model reads it is recorded in [doc/security.md](doc/security.md).
+
 ## Introduction
 
 A job-search assistant that runs on your own machine. On a schedule you set — every hour, every six hours, once a day, whatever suits — it collects fresh postings from job boards and company career pages, reads each one against your CV and your preferences, scores it, explains why, and puts the results in a web page you can open from your desk or your phone.
 
-The reading is done by a language model running locally through llama.cpp and opencode, so your CV and your preferences never leave the machine. The only outbound traffic is the requests to the job boards themselves. 
+The reading is done by a language model running locally through llama.cpp and opencode, so your CV and your preferences never leave the machine. The only outbound traffic is the requests to the job boards themselves.
 
-Which model is up to you and your hardware; on an NVIDIA RTX 4090 with 24 GB of VRAM, Qwen 3.8 27B is an optimal choice.
+Which model is up to you and your hardware; on an NVIDIA RTX 4090 with 24 GB of VRAM, Qwen3.8-27B is an optimal choice.
 
 What you get:
 
 - **A ranked list** of jobs with a score from 0 to 100, a short summary, the salary if the posting states one, and a plain-language note on whether you are actually eligible (visa, location, contract shape).
-  
+
 - **Reasoning, not keyword matching.** A posting that lists your skills is not necessarily your job, and a job you would be good at does not always use your words. You describe your experience and what you want in plain language — the technologies you know well versus the ones you have only touched, the kind of work you want more of and less of — and the model reads that every time it judges a posting, instead of counting keywords.
-  
+
 - **A growing set of sources.** It starts from a list of boards and learns new company career pages from the postings it finds, so coverage widens by itself over time.
-  
+
 - **A web app** to browse, search, filter, shortlist, mark as applied, archive and delete.
 
 ## Architecture
 
 The architecture is described in [doc/architecture.md](doc/architecture.md).
 
-> [!CAUTION]
-> The entire project was "vibe coded" 🤡 — written by an AI assistant in conversation, with only the tech stack choices made by a human. Use it at your own risk. What a job posting's text can and cannot reach when the model reads it is recorded in [doc/security.md](doc/security.md).
-
 ## What you need
 
-- A Linux machine with an NVIDIA GPU that can run a language model, and [Docker](https://docs.docker.com/engine/install/) installed **with GPU access**: the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) lets the container use the GPU, and the model server runs inside it. Install Docker, install the toolkit, then `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`. Check it with `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`, which should print your GPU
+- A Linux machine with an NVIDIA GPU that can run a language model, and [Docker](https://docs.docker.com/engine/install/) installed **with GPU access**: the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) lets the container use the GPU, and the model server runs inside it. Install Docker, install the toolkit, then `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`. Check it with `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`, which should print your GPU.
 - About 20 GB of disk for the model, and the time to download it once
 - Your CV as a PDF, Markdown or text file
 
